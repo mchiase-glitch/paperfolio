@@ -12,7 +12,7 @@ export async function renderSearch(el) {
       ${[["", "Tutti"], ["stock", "Azioni"], ["etf", "ETF"]].map(([v, l]) => `<button class="chip ${v === lastType ? "active" : ""}" data-t="${v}">${l}</button>`).join("")}
     </div>
     <div class="card" id="results"><div class="empty">Scrivi almeno due caratteri</div></div>
-    <div class="small muted" style="margin:0 4px">Per ora si possono negoziare solo le azioni; ETF e obbligazioni arrivano nelle prossime fasi.
+    <div class="small muted" style="margin:0 4px">Si possono negoziare azioni ed ETF armonizzati quotati in Europa (gli ETF USA non sono acquistabili da un risparmiatore italiano). Le obbligazioni arrivano nella fase 3.
       Non trovi un titolo? <a href="#" id="manual">Aggiungilo con prezzo manuale</a>.</div>`;
   const q = el.querySelector("#q");
   const results = el.querySelector("#results");
@@ -57,7 +57,7 @@ export async function renderSearch(el) {
 }
 
 function item(r) {
-  const reason = r.supported ? "" : (!r.exchange ? "borsa non supportata" : "disponibile nelle prossime fasi");
+  const reason = r.supported ? "" : (r.reason || "non supportato");
   return `<div class="list-item clickable ${r.supported ? "" : "disabled"}" data-symbol="${esc(r.symbol)}" data-id="${r.known ? r.id : ""}" data-supported="${r.supported}">
     <div class="main"><div class="title">${esc(r.name)}</div>
       <div class="small muted">${esc(r.symbol)} · ${esc(r.exchange_label || "")}${r.isin ? " · " + esc(r.isin) : ""}</div></div>
@@ -71,6 +71,7 @@ function manualForm() {
     <label class="field"><span>Nome</span><input type="text" id="name"></label>
     <label class="field"><span>Codice (ticker o ISIN, univoco)</span><input type="text" id="symbol"></label>
     <label class="field"><span>ISIN (facoltativo)</span><input type="text" id="isin" maxlength="12"></label>
+    <label class="field"><span>Tipo</span><select id="type"><option value="stock">Azione</option><option value="etf">ETF armonizzato</option></select></label>
     <label class="field"><span>Mercato</span><select id="market"><option value="ITA">Borsa Italiana</option><option value="EUR">Europa</option><option value="USA">USA</option></select></label>
     <label class="field"><span>Valuta</span><select id="currency"><option>EUR</option><option>USD</option></select></label>
     <label class="field"><span>Paese emittente (ISO, es. IT)</span><input type="text" id="country" maxlength="2"></label>
@@ -81,7 +82,7 @@ function manualForm() {
     const market = v("market");
     try {
       const inst = await api.post("/api/instruments/manual", {
-        name: v("name"), symbol: v("symbol").toUpperCase(), isin: v("isin").toUpperCase() || null, market,
+        name: v("name"), symbol: v("symbol").toUpperCase(), isin: v("isin").toUpperCase() || null, market, type: v("type"),
         exchange: { ITA: "XMIL", EUR: "XETR", USA: "XNYS" }[market], currency: v("currency"),
         country: v("country").toUpperCase() || null, price: v("price").replace(",", "."),
       });

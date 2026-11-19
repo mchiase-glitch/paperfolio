@@ -52,10 +52,11 @@ async function movementsHtml() {
     <div class="list-item">
       <div class="main">
         <div class="title">${esc(m.label)}${m.name ? " " + esc(m.name) : ""}</div>
-        <div class="small muted">${dateTime(m.ts)}${m.quantity ? ` · ${m.quantity} a ${price(m.price, m.price_currency)}` : ""}${m.description ? " · " + esc(m.description) : ""}</div>
+        <div class="small muted">${dateTime(m.ts)}${m.quantity && (m.kind === "buy" || m.kind === "sell") ? ` · ${m.quantity} a ${price(m.price, m.price_currency)}` : ""}${m.description ? " · " + esc(m.description) : ""}</div>
+        ${m.kind === "dividend" ? `<div class="small muted">Lordo ${money(m.gross_eur)}${Number(m.withholding_eur) ? ` · ritenuta estera ${money(m.withholding_eur)}` : ""} · imposta ${money(m.tax_eur)}</div>` : ""}
         ${m.kind === "buy" || m.kind === "sell" ? `<div class="small muted">Commissione ${money(m.commission_eur)}${Number(m.tobin_tax_eur) ? ` · Tobin ${money(m.tobin_tax_eur)}` : ""}${Number(m.tax_eur) ? ` · imposte ${money(m.tax_eur)}` : ""}${m.realized_fiscal_eur !== null ? ` · plus/minus <span class="${cls(m.realized_fiscal_eur)}">${signedMoney(m.realized_fiscal_eur)}</span>` : ""}</div>` : ""}
       </div>
-      <div class="right num ${cls(m.cash_delta_eur)}">${signedMoney(m.cash_delta_eur)}</div>
+      <div class="right num ${cls(m.cash_delta_eur)}">${m.kind === "split" ? "" : signedMoney(m.cash_delta_eur)}</div>
     </div>`).join("");
   return `<a class="btn block" href="/api/movements.csv" download style="margin-bottom:12px">Esporta in CSV</a>
     <div class="card">${items || '<div class="empty">Nessun movimento</div>'}</div>`;

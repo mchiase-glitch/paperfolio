@@ -9,7 +9,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/api_test.db"
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.data_provider import Quote, set_provider
+from app.data_provider import CorporateActions, Quote, set_provider
 from app.database import make_engine
 from app.migrate import upgrade_to_head
 from app.models import Instrument
@@ -35,6 +35,7 @@ class FakeProvider:
     def __init__(self):
         self.quotes: dict[str, Quote] = {}
         self.fx: dict[str, Decimal] = {"USD": D("1.08")}
+        self.actions: dict[str, CorporateActions] = {}
 
     def set(self, symbol, price, when, currency="EUR", prev_close=None):
         self.quotes[symbol] = Quote(D(price), currency, when, None if prev_close is None else D(prev_close))
@@ -53,6 +54,9 @@ class FakeProvider:
 
     def history(self, symbol, period):
         return []
+
+    def corporate_actions(self, symbol):
+        return self.actions.get(symbol, CorporateActions([], [], []))
 
 
 @pytest.fixture

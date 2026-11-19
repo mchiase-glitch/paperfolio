@@ -1,6 +1,6 @@
 import { api } from "../api.js";
-import { openSheet, setTitle } from "../app.js";
-import { cls, esc, money, num, pct, price, priceTime, MARKET_LABELS, TYPE_LABELS } from "../format.js";
+import { closeSheet, openSheet, setTitle, toast } from "../app.js";
+import { cls, date, esc, money, num, pct, price, priceTime, signedMoney, MARKET_LABELS, TYPE_LABELS } from "../format.js";
 import { openOrderSheet } from "./order-sheet.js";
 
 export async function renderDetail(el, id) {
@@ -38,10 +38,26 @@ export async function renderDetail(el, id) {
         ${q ? `<div class="row total"><span class="k">Controvalore</span><span class="v">${money(Number(pos.quantity) * Number(q.price) / Number(q.fx_market))}</span></div>` : ""}
       ` : '<div class="muted">Nessuna posizione su questo titolo.</div>'}
     </section>
-    <div class="btn-row">
+    <div class="btn-row" style="margin-bottom:12px">
       <button class="btn buy" id="buy" ${q ? "" : "disabled"}>Compra</button>
       <button class="btn sell" id="sell" ${q && pos ? "" : "disabled"}>Vendi</button>
-    </div>`;
+    </div>
+    <section class="card">
+      <h2>${inst.type === "etf" ? "Distribuzioni" : "Dividendi"} ed eventi societari</h2>
+      <div id="events"><div class="empty small">Caricamento…</div></div>
+      <button class="btn small" id="add-event" style="margin-top:8px">+ Aggiungi evento</button>
+    </section>`;
+
+  const eventsEl = el.querySelector("#events");
+  const loadEvents = async () => {
+    const { events } = await api.get(`/api/instruments/${id}/events`);
+    eventsEl.innerHTML = events.length ? events.map((ev) => eventRow(ev, inst)).join("")
+      : '<div class="muted small">Nessun evento dalla data del tuo primo acquisto. Gli eventi si aggiornano ogni mattina.</div>';
+    eventsEl.querySelectorAll("[data-edit]").forEach((row) => row.addEventListener("click", () =>
+      editEvent(events.find((e) => e.id === Number(row.dataset.edit)), inst, loadEvents)));
+  };
+  loadEvents().catch((e) => (eventsEl.innerHTML = `<div class="error small">${esc(e.message)}</div>`));
+  el.querySelector("#add-event").addEventListener("click", () => addEvent(inst, loadEvents));
 
   el.querySelector("#buy").addEventListener("click", () => openOrderSheet(inst, "buy", pos));
   el.querySelector("#sell").addEventListener("click", () => openOrderSheet(inst, "sell", pos));
@@ -76,6 +92,76 @@ function sparkline(points) {
       <path class="line" d="${d}" stroke="${color}" vector-effect="non-scaling-stroke"/></svg>
     <div class="small muted" style="display:flex;justify-content:space-between">
       <span>min ${num(min, 3)} · max ${num(max, 3)}</span><span class="${up ? "pos" : "neg"}">${pct(change)} nel periodo</span></div>`;
+}
+
+function eventRow(ev, inst) {
+  const status = ev.processed ? '<span class="status executed">Registrato</span>' : '<span class="status pending">In arrivo</span>';
+  if (ev.kind === "split") {
+    return `<div class="list-item"><div class="main"><div class="title">${esc(ev.label)}</div>
+      <div class="small muted">efficace dal ${date(ev.ex_date)}${ev.source === "manual" ? " · inserito a mano" : ""}</div></div>
+      <div class="right">${status}</div></div>`;
+  }
+  return `<div class="list-item ${ev.editable ? "clickable" : ""}" ${ev.editable ? `data-edit="${ev.id}"` : ""}>
+    <div class="main"><div class="title">${inst.type === "etf" ? "Distribuzione" : "Dividendo"} ${ev.amount ? `${num(ev.amount, 6)} ${inst.currency}` : "(importo non ancora noto)"}</div>
+      <div class="small muted">stacco ${date(ev.ex_date)} · pagamento ${date(ev.pay_date)}${ev.pay_date_estimated ? " (stimato)" : ""}${ev.source === "manual" ? " · inserito a mano" : ""}</div>
+      ${ev.editable ? '<div class="small muted">Tocca per correggere data o importo</div>' : ""}</div>
+    <div class="right">${status}${ev.net_eur !== null ? `<div class="small pos">${signedMoney(ev.net_eur)}</div>` : ""}</div></div>`;
+}
+
+function addEvent(inst, reload) {
+  const sheet = openSheet(`<h3>Nuovo evento – ${esc(inst.name)}</h3>
+    <div class="small muted" style="margin-bottom:10px">Per eventi che la fonte automatica non riporta o riporta male.</div>
+    <label class="field"><span>Tipo</span><select id="kind"><option value="dividend">${inst.type === "etf" ? "Distribuzione" : "Dividendo"}</option><option value="split">Frazionamento / raggruppamento</option></select></label>
+    <label class="field"><span id="ex-label">Data di stacco</span><input type="date" id="ex"></label>
+    <div id="div-fields">
+      <label class="field"><span>Data di pagamento (vuota = stima automatica)</span><input type="date" id="pay"></label>
+      <label class="field"><span>Importo lordo per azione (${inst.currency})</span><input type="text" inputmode="decimal" id="amount"></label>
+    </div>
+    <div id="split-fields" hidden>
+      <div class="grid2">
+        <label class="field"><span>Nuove azioni</span><input type="text" inputmode="decimal" id="new" value="2"></label>
+        <label class="field"><span>ogni azioni possedute</span><input type="text" inputmode="decimal" id="old" value="1"></label>
+      </div>
+      <div class="small muted">Esempi: frazionamento 4×1 → 4 e 1; raggruppamento 1×10 → 1 e 10. Le frazioni vengono liquidate.</div>
+    </div>
+    <button class="btn primary block" id="save" style="margin-top:10px">Aggiungi</button><div class="error small" id="err"></div>`);
+  const kind = sheet.querySelector("#kind");
+  kind.addEventListener("change", () => {
+    const split = kind.value === "split";
+    sheet.querySelector("#div-fields").hidden = split;
+    sheet.querySelector("#split-fields").hidden = !split;
+    sheet.querySelector("#ex-label").textContent = split ? "Data di efficacia" : "Data di stacco";
+  });
+  sheet.querySelector("#save").addEventListener("click", async () => {
+    const v = (s) => sheet.querySelector(s).value.trim().replace(",", ".");
+    const body = { kind: kind.value, ex_date: v("#ex") };
+    if (kind.value === "dividend") Object.assign(body, { pay_date: v("#pay") || null, amount: v("#amount") });
+    else body.ratio = String(Number(v("#new")) / Number(v("#old")));
+    try {
+      await api.post(`/api/instruments/${inst.id}/events`, body);
+      closeSheet();
+      toast("Evento aggiunto");
+      reload();
+    } catch (e) { sheet.querySelector("#err").textContent = e.message; }
+  });
+}
+
+function editEvent(ev, inst, reload) {
+  const sheet = openSheet(`<h3>Correggi ${inst.type === "etf" ? "distribuzione" : "dividendo"}</h3>
+    <div class="small muted" style="margin-bottom:10px">Stacco ${date(ev.ex_date)}. Le fonti gratuite spesso non danno la data di pagamento: puoi indicare quella vera.</div>
+    <label class="field"><span>Data di pagamento</span><input type="date" id="pay" value="${ev.pay_date ?? ""}"></label>
+    <label class="field"><span>Importo lordo per azione (${inst.currency})</span><input type="text" inputmode="decimal" id="amount" value="${ev.amount ?? ""}"></label>
+    <button class="btn primary block" id="save">Salva</button><div class="error small" id="err"></div>`);
+  sheet.querySelector("#save").addEventListener("click", async () => {
+    const pay = sheet.querySelector("#pay").value;
+    const amount = sheet.querySelector("#amount").value.trim().replace(",", ".");
+    try {
+      await api.put(`/api/events/${ev.id}`, { pay_date: pay || null, amount: amount || null });
+      closeSheet();
+      toast("Evento aggiornato");
+      reload();
+    } catch (e) { sheet.querySelector("#err").textContent = e.message; }
+  });
 }
 
 function manualPrice(inst) {

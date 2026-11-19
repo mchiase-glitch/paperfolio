@@ -1,4 +1,4 @@
-from .base import DataProvider, DataProviderError, InstrumentInfo, Quote, SearchResult
+from .base import CorporateActions, DataProvider, DataProviderError, InstrumentInfo, Quote, SearchResult
 
 _provider: DataProvider | None = None
 
@@ -18,5 +18,5 @@ def set_provider(provider: DataProvider) -> None:
     _provider = provider
 
 
-__all__ = ["DataProvider", "DataProviderError", "InstrumentInfo", "Quote", "SearchResult",
+__all__ = ["CorporateActions", "DataProvider","DataProviderError", "InstrumentInfo", "Quote", "SearchResult",
            "get_provider", "set_provider"]

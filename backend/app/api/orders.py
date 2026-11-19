@@ -89,7 +89,7 @@ def movements_csv(db: Session = Depends(get_db)):
     w = csv.writer(buf, delimiter=";")
     cols = ["data_ora_roma", "tipo", "simbolo", "isin", "strumento", "quantita", "prezzo", "valuta",
             "cambio_mercato", "cambio_applicato", "controvalore_eur", "commissione_eur", "tobin_tax_eur",
-            "imposte_eur", "plus_minus_fiscale_eur", "importo_netto_eur", "descrizione"]
+            "ritenuta_estera_eur", "imposte_eur", "plus_minus_fiscale_eur", "importo_netto_eur", "descrizione"]
     w.writerow(cols)
 
     def it(v):  # formato numerico italiano per Excel
@@ -100,7 +100,8 @@ def movements_csv(db: Session = Depends(get_db)):
         w.writerow([e.ts.astimezone(portfolio.ROME).strftime("%d/%m/%Y %H:%M:%S"), d["label"], d["symbol"] or "",
                     d["isin"] or "", d["name"] or "", it(e.quantity), it(e.price), e.price_currency or "",
                     it(e.fx_market), it(e.fx_applied), it(e.gross_eur), it(e.commission_eur), it(e.tobin_tax_eur),
-                    it(e.tax_eur), it(e.realized_fiscal_eur), it(e.cash_delta_eur), e.description or ""])
+                    it(e.withholding_eur), it(e.tax_eur), it(e.realized_fiscal_eur), it(e.cash_delta_eur),
+                    e.description or ""])
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="paperfolio_movimenti.csv"'})
 
@@ -124,8 +125,11 @@ def order_dict(db: Session, o: Order) -> dict:
 
 def entry_dict(db: Session, e: LedgerEntry) -> dict:
     inst = db.get(Instrument, e.instrument_id) if e.instrument_id else None
+    label = KIND_LABELS.get(e.kind, e.kind)
+    if e.kind == "dividend" and inst and inst.type == "etf":
+        label = "Distribuzione"
     return {
-        "id": e.id, "ts": e.ts, "kind": e.kind, "label": KIND_LABELS.get(e.kind, e.kind),
+        "id": e.id, "ts": e.ts, "kind": e.kind, "label": label,
         "instrument_id": e.instrument_id, "symbol": inst.symbol if inst else None,
         "isin": inst.isin if inst else None, "name": inst.name if inst else None,
         "quantity": e.quantity, "price": e.price, "price_currency": e.price_currency,
@@ -133,4 +137,5 @@ def entry_dict(db: Session, e: LedgerEntry) -> dict:
         "commission_eur": e.commission_eur, "tobin_tax_eur": e.tobin_tax_eur, "tax_eur": e.tax_eur,
         "realized_gross_eur": e.realized_gross_eur, "realized_fiscal_eur": e.realized_fiscal_eur,
         "loss_added_eur": e.loss_added_eur, "cash_delta_eur": e.cash_delta_eur, "description": e.description,
+        "withholding_eur": e.withholding_eur, "ratio": e.ratio,
     }

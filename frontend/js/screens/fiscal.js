@@ -28,6 +28,15 @@ export async function renderFiscal(el) {
           <div class="small muted">Plus ${money(c.gains)} · minus ${money(c.losses)} · imponibile ${money(c.taxable)}</div></div>
           <div class="right num">${money(c.tax)}</div></div>`).join("") : '<div class="empty">Nessuna vendita nell\'anno</div>'}
     </section>
+    <h3 class="section-title">Redditi di capitale: dividendi e distribuzioni</h3>
+    <section class="card">
+      ${f.capital_income.count ? `
+        ${row(`Lordo incassato (${f.capital_income.count} accrediti)`, money(f.capital_income.gross))}
+        ${row("Ritenute estere", money(f.capital_income.withholding))}
+        ${row("Imposta italiana", money(f.capital_income.tax))}
+        ${row("Netto accreditato", money(f.capital_income.net), "total")}` : '<div class="empty">Nessun dividendo nell\'anno</div>'}
+      <div class="small muted" style="margin-top:8px">Redditi di capitale: tassati al 26% (sul netto della ritenuta del paese emittente per le azioni estere) e mai compensabili con lo zainetto.</div>
+    </section>
     <h3 class="section-title">Zainetto fiscale</h3>
     <section class="card">
       ${row("Minus compensabili disponibili", money(f.zainetto_available), "total")}

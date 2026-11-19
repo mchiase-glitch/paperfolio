@@ -1,8 +1,10 @@
 # PaperFolio – Contesto di progetto
 
 ## Stato attuale
+**Fase 2 completata** (19/11/2026): ETF armonizzati, dividendi e distribuzioni (ritenuta estera + 26%),
+frazionamenti e raggruppamenti. 51 test automatici superati.
 **Fase 1 completata** (19/11/2026): azioni ITA/EUR/USA, cambio con spread, commissioni, ordini in attesa,
-fiscalità 26% con zainetto, bollo, PWA mobile, Docker e deploy sul Pi. 39 test automatici superati.
+fiscalità 26% con zainetto, bollo, PWA mobile, Docker e deploy sul Pi.
 **Non ancora fatto**: repository GitHub e primo deploy sul Pi (servono i comandi qui sotto, da lanciare a mano).
 
 ---
@@ -21,12 +23,12 @@ backend/app/
   database.py        Decimal salvati come testo, orari sempre UTC
   models.py          tabelle
   migrate.py         alembic upgrade head all'avvio
-  scheduler.py       ordini in attesa (ogni 60 s), valutazione giornaliera (23:00), bollo (1° gennaio)
-  api/               portfolio, instruments, orders (+ movimenti e CSV), fiscal, settings
-  services/          commission, fx, prices, positions, tax, orders, portfolio, market_hours, settings
+  scheduler.py       ordini in attesa (ogni 60 s), eventi societari (7:00), valutazione giornaliera (23:00), bollo (1° gennaio)
+  api/               portfolio, instruments, orders (+ movimenti e CSV), events, fiscal, settings
+  services/          commission, fx, prices, positions, tax, orders, portfolio, corporate_events, market_hours, settings
   data_provider/     base (interfaccia), yfinance_adapter, mapping (borse/paesi)
-backend/alembic/versions/0001_schema_iniziale.py
-backend/tests/       39 test
+backend/alembic/versions/  0001_schema_iniziale, 0002_eventi_societari
+backend/tests/       51 test
 frontend/            index.html, css, js/screens/*, manifest.json, sw.js, icons/
 Dockerfile, docker-compose.yml, deploy.sh, .env.example
 ```
@@ -47,13 +49,22 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 - **Reset**: chiude il conto (bollo maturato addebitato, ordini in attesa annullati) e ne apre uno nuovo. Lo storico resta nel database.
 - **Paese emittente** da yfinance: decide Tobin tax (es. Stellantis = NL, niente Tobin) e in futuro le ritenute.
 - **Prezzo manuale**: strumenti con `data_source = manual`, prezzo inserito dall'app, sempre etichettato "prezzo manuale".
+- **ETF (fase 2)**: negoziabili solo se quotati su borse europee; gli ETF USA sono bloccati perché non UCITS. yfinance non dice se un ETF è armonizzato: si assume che lo siano tutti quelli quotati in Europa. Paese = prefisso dell'ISIN (IE, LU...) quando la fonte non lo fornisce. Niente Tobin tax.
+- **Eventi societari (fase 2)**: tabella `corporate_events` (fatti dello strumento, modificabili finché non registrati); gli effetti sul conto vanno nel ledger con `corporate_event_id`. Job ogni mattina alle 7:00 e all'avvio: legge da yfinance dividendi e split dalla data del primo acquisto, poi applica ciò che è maturato.
+- **Dividendi**: spettano alle quantità possedute prima della mezzanotte (ora di Roma) del giorno di stacco: chi compra il giorno dello stacco non ha diritto, chi vende quel giorno sì. Accredito alla data di pagamento. Calcolo: lordo in valuta → EUR al cambio di vendita con spread → ritenuta del paese emittente (solo azioni estere, tabella `withholding_rates`) → aliquota italiana della categoria sul netto. Gli ETF non subiscono ritenute estere.
+- **Data di pagamento**: yfinance la dà solo per il prossimo dividendo dei titoli USA. Negli altri casi si stima (Italia/UE: stacco + 2 giorni lavorativi; ETF: + 14 giorni; USA: + 21 giorni), con l'etichetta "stimato" e la possibilità di correggerla dal dettaglio del titolo.
+- **Importi dei dividendi**: yfinance riporta i dividendi passati divisi per gli split successivi; il programma li riporta al valore reale.
+- **Split**: quantità × rapporto e costo invariato, quindi il prezzo medio di carico si adegua. Nei raggruppamenti la frazione viene liquidata senza commissioni al prezzo corrente, con calcolo fiscale.
+- **Risultato realizzato**: comprende dividendi e distribuzioni (lordo e netto).
+- **Eventi manuali**: dal dettaglio del titolo si aggiungono dividendi e split che la fonte non riporta.
 - **Derivati e obbligazioni**: campi già presenti nello schema (moltiplicatore, sottostante, strike, scadenza, call/put, lato posizione, margine; cedola, frequenza, scadenza), nessuna logica ancora.
 
 ## Fonti dati
 | Tipo | Fonte |
 |---|---|
 | Azioni Borsa Italiana, UE, USA | yfinance ✅ (verificato: ENI.MI, STLAM.MI, SAP.DE, AAPL, ricerca anche per ISIN) |
-| ETF UCITS | yfinance (fase 2) |
+| ETF UCITS | yfinance ✅ (verificato: VHYL.MI, IUSA.DE; mancano paese e calendario) |
+| Dividendi e split | yfinance ✅ (storico per data di stacco; data di pagamento solo per i titoli USA) |
 | Cambi | yfinance (`EURUSD=X`) |
 | BTP/CCT, obbligazioni MOT, certificati, derivati IDEM | nessuna fonte gratuita affidabile → prezzo manuale |
 
@@ -63,6 +74,10 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 3. **Installazione PWA su Android**: Chrome richiede HTTPS. Su Tailscale si può usare `tailscale serve` (vedi sotto). Su iPhone "Aggiungi a Home" funziona anche in HTTP.
 4. **Variazione del giorno**: calcolata solo sulle posizioni ancora aperte (le posizioni chiuse oggi non entrano nel risultato del giorno).
 5. Sviluppo: il PROMPT parla del Lenovo Linux; finora il lavoro è stato fatto su un PC Windows. I comandi sotto valgono per entrambi.
+6. **ETC/ETN** (es. oro fisico): Yahoo potrebbe classificarli come ETF, ma fiscalmente sono redditi diversi, non redditi di capitale. Non vengono distinti.
+7. **ETF con titoli di Stato**: nella realtà la quota di proventi riferibile ai titoli white list è tassata al 12,5%; qui tutto al 26%.
+8. **Cambio dei dividendi in valuta**: si usa il cambio del momento in cui il job registra l'accredito, non quello esatto della data di pagamento (coincidono se il server è acceso quel giorno).
+9. **Split e ordini in attesa**: un ordine inserito prima di uno split ed eseguito dopo mantiene la quantità originale.
 
 ---
 
@@ -105,15 +120,16 @@ Aggiornamenti successivi: `cd ~/paperfolio && ./deploy.sh` (backup DB → git pu
 
 ---
 
-## Prossimi passi – Fase 2 (ETF, dividendi, split)
-1. Abilitare gli ETF UCITS (categoria `etf_armonizzati`: plus redditi di capitale, minus nello zainetto — regole già testate).
-2. Dividendi e distribuzioni: rilevazione da yfinance (`Ticker.dividends`), diritto sulle quantità all'ex-date, accredito alla data di pagamento; per gli esteri ritenuta del paese (`withholding_rates`) poi 26% sul netto.
-3. Split e raggruppamenti: riga `split` nel ledger, adeguamento di quantità e prezzo medio.
-4. Decidere sul punto aperto 2 (rimborso imposta nello stesso anno).
+## Prossimi passi – Fase 3 (obbligazioni)
+1. Fonte prezzi: nessuna gratuita affidabile per il MOT → prezzo manuale in % del nominale (corso secco), con etichetta.
+2. Anagrafica: cedola, frequenza, scadenza, emittente, white list (campi già nello schema); categoria `titoli_stato_whitelist` (12,5%) o `obbligazioni_societarie` (26%).
+3. Ordini in nominale; rateo maturato (convenzione di calcolo dei giorni da decidere: ACT/ACT per i BTP) pagato in acquisto e incassato in vendita, tassato all'incasso con l'aliquota dello strumento.
+4. Cedole accreditate al netto; rimborso alla scadenza con calcolo di plus/minus; rendimento a scadenza nel dettaglio.
+5. Restano da decidere i punti aperti 2 (rimborso dell'imposta nello stesso anno) e 7 (ETF con titoli di Stato).
 
 ## Piano delle fasi
 1. ✅ Azioni, cambio con spread, commissioni, ordini in attesa, fiscalità 26% + zainetto, bollo, Docker/deploy
-2. ETF, dividendi, split
+2. ✅ ETF, dividendi, split
 3. Obbligazioni (rateo, cedole, rimborso, regime 12,5%)
 4. Extra: grafico storico vs indice, watchlist, ordini limite/stop, più portafogli
 5. (Futura) Derivati in solo acquisto

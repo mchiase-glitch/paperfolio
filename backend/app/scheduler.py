@@ -6,7 +6,7 @@ from sqlalchemy import select
 from . import config
 from .database import SessionLocal
 from .models import Account
-from .services import orders, portfolio
+from .services import corporate_events, orders, portfolio
 
 log = logging.getLogger("paperfolio.scheduler")
 
@@ -26,6 +26,14 @@ def run_daily_snapshot() -> None:
             portfolio.snapshot(db, account)
 
 
+def run_corporate_events() -> None:
+    with SessionLocal() as db:
+        corporate_events.sync_all(db)
+        done = corporate_events.process(db)
+        if done:
+            log.info("Eventi societari elaborati: %s", done)
+
+
 def run_stamp_duty() -> None:
     with SessionLocal() as db:
         portfolio.charge_past_years(db)
@@ -36,5 +44,6 @@ def start() -> BackgroundScheduler:
     sched.add_job(run_pending_orders, "interval", seconds=60, id="pending_orders", max_instances=1, coalesce=True)
     sched.add_job(run_daily_snapshot, "cron", hour=23, minute=0, id="daily_snapshot")
     sched.add_job(run_stamp_duty, "cron", month=1, day=1, hour=0, minute=10, id="stamp_duty")
+    sched.add_job(run_corporate_events, "cron", hour=7, minute=0, id="corporate_events")
     sched.start()
     return sched

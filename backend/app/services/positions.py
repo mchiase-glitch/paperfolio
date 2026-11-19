@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -29,11 +30,14 @@ class Position:
 
 def apply_entry(positions: dict[tuple[int, str], Position], e: LedgerEntry) -> None:
     """Aggiorna le posizioni con una riga del ledger (prezzo medio ponderato)."""
-    if e.instrument_id is None or e.kind not in ("buy", "sell"):
+    if e.instrument_id is None or e.kind not in ("buy", "sell", "split"):
         return
     key = (e.instrument_id, e.position_side)
     pos = positions.setdefault(key, Position(instrument_id=e.instrument_id, side=e.position_side))
-    if e.kind == "buy":
+    if e.kind == "split":
+        # Costo invariato, quantità moltiplicata: il prezzo medio di carico si adegua da solo
+        pos.quantity *= e.ratio
+    elif e.kind == "buy":
         pos.quantity += e.quantity
         pos.cost_ccy += e.quantity * e.price
         pos.cost_gross_eur += e.gross_eur
@@ -63,10 +67,13 @@ def open_positions(db: Session, account_id: int) -> dict[tuple[int, str], Positi
     return {k: p for k, p in positions_from_entries(ledger(db, account_id)).items() if p.quantity != 0}
 
 
-def position(db: Session, account_id: int, instrument_id: int, side: str = "long") -> Position:
-    entries = db.scalars(select(LedgerEntry).where(
-        LedgerEntry.account_id == account_id, LedgerEntry.instrument_id == instrument_id)
-        .order_by(LedgerEntry.ts, LedgerEntry.id))
+def position(db: Session, account_id: int, instrument_id: int, side: str = "long",
+             before: datetime | None = None) -> Position:
+    """Posizione attuale, oppure quella risultante dai movimenti anteriori a `before`."""
+    q = select(LedgerEntry).where(LedgerEntry.account_id == account_id, LedgerEntry.instrument_id == instrument_id)
+    if before is not None:
+        q = q.where(LedgerEntry.ts < before)
+    entries = db.scalars(q.order_by(LedgerEntry.ts, LedgerEntry.id))
     return positions_from_entries(entries).get((instrument_id, side), Position(instrument_id, side))
 
 

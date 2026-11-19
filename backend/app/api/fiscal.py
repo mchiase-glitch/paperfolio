@@ -22,6 +22,7 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
     by_cat: dict[str, dict] = {}
     totals = {"gains": ZERO, "losses": ZERO, "taxable": ZERO, "tax": ZERO, "commissions": ZERO,
               "tobin": ZERO, "stamp": ZERO, "loss_used": ZERO}
+    income = {"gross": ZERO, "withholding": ZERO, "tax": ZERO, "net": ZERO, "count": 0}
     entry_year = {}
     for e in positions.ledger(db, account.id):
         y = portfolio.rome_date(e.ts).year
@@ -32,6 +33,12 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
         totals["tobin"] += e.tobin_tax_eur
         if e.kind == "stamp_duty":
             totals["stamp"] += e.tax_eur
+        if e.kind == "dividend":
+            income["gross"] += e.gross_eur
+            income["withholding"] += e.withholding_eur or ZERO
+            income["tax"] += e.tax_eur
+            income["net"] += e.cash_delta_eur
+            income["count"] += 1
         if e.kind == "sell":
             cat = by_cat.setdefault(e.fiscal_category, {"category": e.fiscal_category,
                                                         "label": labels.get(e.fiscal_category, e.fiscal_category),
@@ -61,6 +68,7 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
         "year": year,
         "categories": list(by_cat.values()),
         "totals": totals,
+        "capital_income": income,
         "zainetto": lots,
         "zainetto_available": sum((lot["remaining"] for lot in lots if not lot["expired"]), ZERO),
         "stamp_duty": {"estimate_current_year": portfolio.stamp_estimate(db, account, now),

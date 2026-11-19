@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import config, scheduler
-from .api import fiscal, instruments, orders, portfolio, settings
+from .api import events, fiscal, instruments, orders, portfolio, settings
 from .api.common import DecimalJSONResponse
 from .database import SessionLocal, engine
 from .migrate import upgrade_to_head
@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     sched = scheduler.start() if config.ENABLE_SCHEDULER else None
     if sched:
         sched.add_job(scheduler.run_daily_snapshot, id="startup_snapshot")
+        sched.add_job(scheduler.run_corporate_events, id="startup_events")
     yield
     if sched:
         sched.shutdown(wait=False)
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PaperFolio", default_response_class=DecimalJSONResponse, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
-for module in (portfolio, instruments, orders, fiscal, settings):
+for module in (portfolio, instruments, orders, fiscal, settings, events):
     app.include_router(module.router)
 
 

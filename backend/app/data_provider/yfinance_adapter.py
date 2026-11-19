@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import yfinance as yf
 
-from .base import DataProviderError, InstrumentInfo, Quote, SearchResult
+from .base import CorporateActions, DataProviderError, InstrumentInfo, Quote, SearchResult
 from .mapping import COUNTRIES, MINOR_CURRENCIES, YAHOO_EXCHANGES, YAHOO_TYPES
 
 ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
@@ -102,6 +102,26 @@ class YFinanceProvider:
             currency=currency,
             country=COUNTRIES.get(data.get("country", "")),
             isin=None,
+        )
+
+    def corporate_actions(self, symbol: str) -> CorporateActions:
+        t = yf.Ticker(symbol)
+        try:
+            divs, splits = t.dividends, t.splits
+            _, divisor = _normalize_currency(t.fast_info["currency"])
+        except Exception as exc:
+            raise DataProviderError(f"Eventi societari non disponibili per {symbol}") from exc
+        announced = []
+        try:
+            cal = t.calendar or {}
+            if cal.get("Ex-Dividend Date") and cal.get("Dividend Date"):
+                announced.append((cal["Ex-Dividend Date"], cal["Dividend Date"]))
+        except Exception:
+            pass  # il calendario manca per molti titoli europei e per gli ETF
+        return CorporateActions(
+            dividends=[(ts.date(), _dec(v, "0.000001") / divisor) for ts, v in divs.items() if float(v) > 0],
+            splits=[(ts.date(), _dec(v, "0.000001")) for ts, v in splits.items() if float(v) > 0],
+            announced=announced,
         )
 
     def history(self, symbol: str, period: str) -> list[tuple[date, Decimal]]:

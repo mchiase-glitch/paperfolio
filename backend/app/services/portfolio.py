@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import config
 from ..database import utcnow
 from ..models import Account, DailyValuation, Instrument, LedgerEntry, Order, TaxRule
-from . import positions, prices, settings
+from . import corporate_events, positions, prices, settings
 from .commission import commission
 from .money import ZERO, eur
 from .orders import _commission_rule
@@ -156,12 +156,15 @@ def summary(db: Session, account: Account, now: datetime | None = None) -> dict:
     cash = positions.cash_balance(db, account.id)
     reserved = positions.reserved_cash(db, account.id)
 
-    realized_gross = realized_fiscal = sale_taxes = tobin = stamp = ZERO
+    realized_gross = realized_fiscal = sale_taxes = tobin = stamp = dividends_net = ZERO
     for e in positions.ledger(db, account.id):
         if e.kind == "sell":
             realized_gross += e.realized_gross_eur or ZERO
             realized_fiscal += e.realized_fiscal_eur or ZERO
             sale_taxes += e.tax_eur
+        elif e.kind == "dividend":
+            realized_gross += e.gross_eur
+            dividends_net += e.cash_delta_eur
         elif e.kind == "buy":
             tobin += e.tobin_tax_eur
         elif e.kind == "stamp_duty":
@@ -200,7 +203,7 @@ def summary(db: Session, account: Account, now: datetime | None = None) -> dict:
         out_positions.append(item)
 
     stamp_est = stamp_estimate(db, account, now)
-    realized_net = realized_fiscal - sale_taxes - tobin - stamp
+    realized_net = realized_fiscal - sale_taxes - tobin - stamp + dividends_net
     total_value = cash + mv_total
     return {
         "account_id": account.id, "as_of": now, "initial_capital": account.initial_capital,
@@ -216,6 +219,7 @@ def summary(db: Session, account: Account, now: datetime | None = None) -> dict:
         },
         "stamp_duty_estimate": stamp_est,
         "positions": out_positions,
+        "upcoming_dividends": corporate_events.upcoming_dividends(db, account, now),
     }
 
 

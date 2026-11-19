@@ -76,13 +76,20 @@ def preview(db: Session, account: Account, inst: Instrument, side: str, quantity
     if p.currency != inst.currency:
         raise OrderError(f"Valuta del prezzo ({p.currency}) diversa da quella dello strumento ({inst.currency})")
     fx_market, _ = prices.get_fx(db, inst.currency)
-    spread = settings.get_decimal(db, "fx_spread")
+    return compute(db, account, inst, side, quantity, p, fx_market, now)
 
+
+def compute(db: Session, account: Account, inst: Instrument, side: str, quantity: Decimal,
+            p: prices.PriceInfo, fx_market: Decimal, now: datetime, charge_commission: bool = True) -> OrderPreview:
+    """Importi, imposte e stato del mercato per un'operazione a un prezzo dato."""
+    spread = settings.get_decimal(db, "fx_spread")
     gross_ccy = quantity * p.price * inst.multiplier
     conv = to_eur(gross_ccy, inst.currency, fx_market, spread, side)
     gross_eur = eur(conv.amount_eur)
-    rule = _commission_rule(db, inst)
-    comm = commission(gross_eur, rule.fixed_eur, rule.pct, rule.minimum_eur)
+    comm = ZERO
+    if charge_commission:
+        rule = _commission_rule(db, inst)
+        comm = commission(gross_eur, rule.fixed_eur, rule.pct, rule.minimum_eur)
     tobin = tobin_tax(inst.type, inst.country, side, gross_eur, settings.get_decimal(db, "tobin_rate"))
 
     tax_eur, realized_fiscal, realized_gross, tax_detail = ZERO, None, None, None
@@ -154,13 +161,20 @@ def place_order(db: Session, account: Account, inst: Instrument, side: str, quan
 
 
 def _execute(db: Session, account: Account, inst: Instrument, order: Order, pv: OrderPreview, now: datetime) -> None:
+    record_trade(db, account, inst, pv, now, order_id=order.id, position_side=order.position_side)
+    order.status = "executed"
+    order.executed_at = now
+
+
+def record_trade(db: Session, account: Account, inst: Instrument, pv: OrderPreview, now: datetime,
+                 order_id: int | None = None, position_side: str = "long", **extra) -> LedgerEntry:
     entry = LedgerEntry(
-        account_id=account.id, ts=now, kind=pv.side, instrument_id=inst.id, order_id=order.id,
-        position_side=order.position_side, quantity=pv.quantity, price=pv.price, price_currency=pv.price_currency,
+        account_id=account.id, ts=now, kind=pv.side, instrument_id=inst.id, order_id=order_id,
+        position_side=position_side, quantity=pv.quantity, price=pv.price, price_currency=pv.price_currency,
         fx_market=pv.fx_market, fx_spread=pv.fx_spread, fx_applied=pv.fx_applied, gross_eur=pv.gross_eur,
         commission_eur=pv.commission_eur, tobin_tax_eur=pv.tobin_tax_eur, tax_eur=pv.tax_eur,
         cash_delta_eur=-pv.net_eur if pv.side == "buy" else pv.net_eur,
-        fiscal_category=inst.fiscal_category,
+        fiscal_category=inst.fiscal_category, **extra,
     )
     if pv.side == "sell":
         entry.realized_gross_eur = pv.realized_gross_eur
@@ -176,8 +190,7 @@ def _execute(db: Session, account: Account, inst: Instrument, order: Order, pv: 
         for loss_entry_id, amount in pv.tax_detail.usages:
             db.add(LossUsage(account_id=account.id, loss_entry_id=loss_entry_id, used_by_entry_id=entry.id,
                              amount_eur=amount, ts=now))
-    order.status = "executed"
-    order.executed_at = now
+    return entry
 
 
 def cancel_order(db: Session, order: Order, now: datetime | None = None) -> Order:

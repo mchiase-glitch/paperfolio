@@ -38,6 +38,13 @@ class InstrumentInfo:
     isin: str | None
 
 
+@dataclass
+class CorporateActions:
+    dividends: list[tuple[date, Decimal]]  # (data di stacco, importo per azione) come forniti dalla fonte
+    splits: list[tuple[date, Decimal]]  # (data di efficacia, rapporto: 4 = 4×1, 0.1 = raggruppamento 1×10)
+    announced: list[tuple[date, date]]  # (stacco, pagamento) annunciati
+
+
 class DataProvider(Protocol):
     name: str
 
@@ -52,3 +59,5 @@ class DataProvider(Protocol):
     def info(self, symbol: str) -> InstrumentInfo: ...
 
     def history(self, symbol: str, period: str) -> list[tuple[date, Decimal]]: ...
+
+    def corporate_actions(self, symbol: str) -> CorporateActions: ...

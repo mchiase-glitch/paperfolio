@@ -15,7 +15,17 @@ from ..services import portfolio, positions, prices
 router = APIRouter(prefix="/api/instruments", tags=["strumenti"])
 
 FISCAL_BY_TYPE = {"stock": "azioni", "etf": "etf_armonizzati"}
-SUPPORTED_TYPES = {"stock"}  # ETF dalla fase 2, obbligazioni dalla fase 3
+
+
+def unsupported_reason(itype: str, market: str | None) -> str | None:
+    if market is None:
+        return "borsa non supportata"
+    if itype == "etf" and market == "USA":
+        # Gli ETF USA non sono UCITS e non sono acquistabili dai risparmiatori italiani
+        return "ETF non armonizzato (USA)"
+    if itype not in FISCAL_BY_TYPE:
+        return "disponibile nelle prossime fasi"
+    return None
 
 
 def instrument_dict(inst: Instrument) -> dict:
@@ -46,9 +56,10 @@ def search(q: str, type: str | None = None, db: Session = Depends(get_db)):
         for r in get_provider().search(q):
             if r.symbol in seen or (type and r.type != type):
                 continue
+            reason = unsupported_reason(r.type, r.market)
             results.append({"symbol": r.symbol, "name": r.name, "type": r.type, "market": r.market,
                             "exchange": r.exchange, "exchange_label": r.exchange_label, "known": False,
-                            "supported": r.exchange is not None and r.type in SUPPORTED_TYPES})
+                            "supported": reason is None, "reason": reason})
     except DataProviderError as exc:
         error = str(exc)
     return {"results": results, "error": error}
@@ -68,10 +79,14 @@ def add_instrument(body: AddInstrument, db: Session = Depends(get_db)):
         info = get_provider().info(body.symbol)
     except DataProviderError as exc:
         raise HTTPException(400, str(exc))
-    if info.type not in SUPPORTED_TYPES:
-        raise HTTPException(400, "Per ora sono supportate solo le azioni (gli ETF arrivano nella fase 2)")
-    inst = Instrument(symbol=info.symbol, isin=body.isin or info.isin, name=info.name, type=info.type,
-                      market=info.market, exchange=info.exchange, currency=info.currency, country=info.country,
+    reason = unsupported_reason(info.type, info.market)
+    if reason:
+        raise HTTPException(400, f"Strumento non negoziabile: {reason}")
+    isin = (body.isin or info.isin or "").upper() or None
+    # Senza paese dalla fonte (tipico degli ETF) si usa il prefisso dell'ISIN: IE, LU, ...
+    country = info.country or (isin[:2] if isin else None)
+    inst = Instrument(symbol=info.symbol, isin=isin, name=info.name, type=info.type,
+                      market=info.market, exchange=info.exchange, currency=info.currency, country=country,
                       fiscal_category=FISCAL_BY_TYPE[info.type], data_source="yfinance")
     db.add(inst)
     db.commit()
@@ -82,7 +97,7 @@ class ManualInstrument(BaseModel):
     name: str
     isin: str | None = None
     symbol: str
-    type: Literal["stock"] = "stock"
+    type: Literal["stock", "etf"] = "stock"
     market: Literal["ITA", "EUR", "USA"]
     exchange: str = "XMIL"
     currency: str = "EUR"

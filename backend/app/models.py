@@ -92,6 +92,29 @@ class LedgerEntry(Base):
     tax_year: Mapped[int | None] = mapped_column(Integer, nullable=True)  # per bollo
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Eventi societari
+    corporate_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    withholding_eur: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # ritenuta estera
+    ratio: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # split
+
+
+class CorporateEvent(Base):
+    """Fatto societario relativo allo strumento (non al conto). Gli effetti sul conto vanno nel ledger."""
+
+    __tablename__ = "corporate_events"
+    __table_args__ = (UniqueConstraint("instrument_id", "kind", "ex_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(10))  # dividend / split
+    ex_date: Mapped[date] = mapped_column(Date)  # stacco o efficacia dello split
+    pay_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    pay_date_estimated: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # per azione, valuta strumento
+    ratio: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)
+    source: Mapped[str] = mapped_column(String(20))  # yfinance / manual
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
 
 class LossUsage(Base):
     """Utilizzo di una minus dello zainetto a compensazione di una plus. Append-only."""

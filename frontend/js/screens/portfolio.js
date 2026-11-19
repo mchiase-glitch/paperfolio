@@ -1,10 +1,10 @@
 import { api } from "../api.js";
-import { cls, dateTime, esc, money, pct, price, priceTime, signedMoney, TYPE_LABELS } from "../format.js";
+import { cls, date, dateTime, esc, money, num, pct, price, priceTime, signedMoney, TYPE_LABELS } from "../format.js";
 
 export async function renderPortfolio(el) {
   const load = async () => {
     const p = await api.get("/api/portfolio");
-    el.innerHTML = summary(p) + positions(p);
+    el.innerHTML = summary(p) + upcoming(p) + positions(p);
     el.querySelectorAll("[data-instrument]").forEach((c) =>
       c.addEventListener("click", () => (location.hash = `#/strumento/${c.dataset.instrument}`)));
     el.querySelector("#refresh")?.addEventListener("click", () => load().catch(showError));
@@ -41,9 +41,22 @@ function summary(p) {
       <div class="kv"><span class="k">Realizzato netto</span><span class="v ${cls(pl.realized_net)}">${signedMoney(pl.realized_net)}</span></div>
     </div>
     <div class="divider"></div>
-    <div class="small muted">Netto = al netto di commissioni, imposte, Tobin tax e bollo (stima bollo ${new Date().getFullYear()}: ${money(p.stamp_duty_estimate)}). Il non realizzato netto stima commissione e imposta di un'eventuale vendita, senza zainetto.</div>
+    <div class="small muted">Il realizzato comprende dividendi e distribuzioni. Netto = al netto di commissioni, imposte, ritenute, Tobin tax e bollo (stima bollo ${new Date().getFullYear()}: ${money(p.stamp_duty_estimate)}). Il non realizzato netto stima commissione e imposta di un'eventuale vendita, senza zainetto.</div>
   </section>
   <div class="refresh-line"><span>Aggiornato ${dateTime(p.as_of)}</span><button class="btn small" id="refresh">Aggiorna</button></div>`;
+}
+
+function upcoming(p) {
+  if (!p.upcoming_dividends?.length) return "";
+  return `<section class="card">
+    <h2>Dividendi in arrivo</h2>
+    ${p.upcoming_dividends.map((d) => `
+      <div class="list-item clickable" data-instrument="${d.instrument_id}">
+        <div class="main"><div class="title">${esc(d.name)}</div>
+          <div class="small muted">${d.quantity} × ${num(d.amount, 6)} ${d.currency} · pagamento ${date(d.pay_date)}${d.pay_date_estimated ? " (stimato)" : ""}</div></div>
+        <div class="right num pos">${signedMoney(d.net_eur)}<div class="small muted">netto stimato</div></div>
+      </div>`).join("")}
+  </section>`;
 }
 
 function positions(p) {
