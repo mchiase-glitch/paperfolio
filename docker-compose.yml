@@ -1,0 +1,15 @@
+services:
+  paperfolio:
+    build: .
+    container_name: paperfolio
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Il database vive nella cartella dati montata, fuori dal repository
+      DATABASE_URL: sqlite:////data/paperfolio.db
+      FRONTEND_DIR: /app/frontend
+      TZ: Europe/Rome
+    ports:
+      - "${PORT:-8042}:8042"
+    volumes:
+      - "${PAPERFOLIO_DATA_DIR:-../paperfolio-data}:/data"
