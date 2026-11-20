@@ -10,6 +10,7 @@ frazionamenti e raggruppamenti. 51 test automatici superati.
 **Fase 1 completata** (19/11/2026): azioni ITA/EUR/USA, cambio con spread, commissioni, ordini in attesa,
 fiscalità 26% con zainetto, bollo, PWA mobile, Docker e deploy sul Pi.
 **Repository e Pi**: repository privato `mchiase-glitch/paperfolio` su GitHub; app attiva sul Pi (mercuberryPi) sulla porta 8042, con HTTPS tramite `tailscale serve` sulla 8443.
+**In produzione** (21/11/2026): la Fase 4 è installata sul Pi e verificata dal telefono (PWA installata). Prossimo passo: periodo d'uso reale per raccogliere correzioni; la Fase 5 solo su richiesta.
 
 ---
 
@@ -142,6 +143,12 @@ Aggiornamenti successivi: `cd ~/paperfolio && ./deploy.sh` (backup DB → git pu
 - App: `http://<nome-pi-tailscale>:8042`
 - HTTPS facoltativo per installare la PWA su Android: `sudo tailscale serve --bg --https=8443 http://127.0.0.1:8042` → `https://<nome-pi>.<tailnet>.ts.net:8443`
 - Log: `docker compose logs --tail 100 -f`
+- Il serve di Tailscale va abilitato una volta sola per il tailnet (link login.tailscale.com mostrato dal comando).
+
+### Aggiornare l'app sul telefono
+Non serve reinstallare: dopo `git push` (PC) e `./deploy.sh` (Pi) basta chiudere del tutto l'app e riaprirla.
+I dati stanno nel database sul Pi, non sul telefono. Se dovesse restare una schermata vuota o vecchia:
+Android Chrome → lucchetto → Impostazioni sito → Cancella e reimposta; iPhone → Impostazioni → Safari → Avanzate → Dati dei siti web.
 
 ---
 
