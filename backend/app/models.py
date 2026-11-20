@@ -44,6 +44,9 @@ class Instrument(Base):
     coupon_rate: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)
     coupon_frequency: Mapped[int | None] = mapped_column(Integer, nullable=True)
     maturity: Mapped[date | None] = mapped_column(Date, nullable=True)
+    issue_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # inizio maturazione della prima cedola
+    lot_size: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # taglio minimo del nominale
+    day_count: Mapped[str | None] = mapped_column(String(10), nullable=True)  # ACT/ACT oppure 30/360
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
@@ -97,6 +100,11 @@ class LedgerEntry(Base):
     withholding_eur: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # ritenuta estera
     ratio: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # split
 
+    # Obbligazioni: il rateo si calcola alla data di regolamento (T+2), che decide anche il diritto alla cedola
+    settlement_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    accrued_interest_eur: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # rateo lordo
+    interest_tax_eur: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # < 0 = credito d'imposta
+
 
 class CorporateEvent(Base):
     """Fatto societario relativo allo strumento (non al conto). Gli effetti sul conto vanno nel ledger."""
@@ -106,7 +114,7 @@ class CorporateEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(10))  # dividend / split
+    kind: Mapped[str] = mapped_column(String(10))  # dividend / split / coupon / redemption
     ex_date: Mapped[date] = mapped_column(Date)  # stacco o efficacia dello split
     pay_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     pay_date_estimated: Mapped[int] = mapped_column(Integer, default=0)

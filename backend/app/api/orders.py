@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api", tags=["ordini"])
 
 KIND_LABELS = {
     "deposit": "Versamento", "buy": "Acquisto", "sell": "Vendita", "stamp_duty": "Imposta di bollo",
-    "dividend": "Dividendo", "coupon": "Cedola", "redemption": "Rimborso", "split": "Frazionamento",
+    "dividend": "Dividendo", "coupon": "Cedola", "redemption": "Rimborso a scadenza", "split": "Frazionamento",
 }
 
 
@@ -89,6 +89,7 @@ def movements_csv(db: Session = Depends(get_db)):
     w = csv.writer(buf, delimiter=";")
     cols = ["data_ora_roma", "tipo", "simbolo", "isin", "strumento", "quantita", "prezzo", "valuta",
             "cambio_mercato", "cambio_applicato", "controvalore_eur", "commissione_eur", "tobin_tax_eur",
+            "rateo_eur", "imposta_rateo_eur", "data_regolamento",
             "ritenuta_estera_eur", "imposte_eur", "plus_minus_fiscale_eur", "importo_netto_eur", "descrizione"]
     w.writerow(cols)
 
@@ -100,6 +101,8 @@ def movements_csv(db: Session = Depends(get_db)):
         w.writerow([e.ts.astimezone(portfolio.ROME).strftime("%d/%m/%Y %H:%M:%S"), d["label"], d["symbol"] or "",
                     d["isin"] or "", d["name"] or "", it(e.quantity), it(e.price), e.price_currency or "",
                     it(e.fx_market), it(e.fx_applied), it(e.gross_eur), it(e.commission_eur), it(e.tobin_tax_eur),
+                    it(e.accrued_interest_eur), it(e.interest_tax_eur),
+                    e.settlement_date.strftime("%d/%m/%Y") if e.settlement_date else "",
                     it(e.withholding_eur), it(e.tax_eur), it(e.realized_fiscal_eur), it(e.cash_delta_eur),
                     e.description or ""])
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
@@ -117,6 +120,7 @@ def order_dict(db: Session, o: Order) -> dict:
     entry = db.scalar(select(LedgerEntry).where(LedgerEntry.order_id == o.id))
     return {
         "id": o.id, "instrument_id": o.instrument_id, "symbol": inst.symbol, "name": inst.name,
+        "instrument_type": inst.type, "currency": inst.currency,
         "side": o.side, "quantity": o.quantity, "status": o.status, "reserved_eur": o.reserved_eur,
         "created_at": o.created_at, "executed_at": o.executed_at, "cancelled_at": o.cancelled_at, "note": o.note,
         "execution": entry_dict(db, entry) if entry else None,
@@ -137,5 +141,7 @@ def entry_dict(db: Session, e: LedgerEntry) -> dict:
         "commission_eur": e.commission_eur, "tobin_tax_eur": e.tobin_tax_eur, "tax_eur": e.tax_eur,
         "realized_gross_eur": e.realized_gross_eur, "realized_fiscal_eur": e.realized_fiscal_eur,
         "loss_added_eur": e.loss_added_eur, "cash_delta_eur": e.cash_delta_eur, "description": e.description,
-        "withholding_eur": e.withholding_eur, "ratio": e.ratio,
+        "withholding_eur": e.withholding_eur, "ratio": e.ratio, "instrument_type": inst.type if inst else None,
+        "accrued_interest": e.accrued_interest, "accrued_interest_eur": e.accrued_interest_eur,
+        "interest_tax_eur": e.interest_tax_eur, "settlement_date": e.settlement_date,
     }

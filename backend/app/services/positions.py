@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -30,7 +30,7 @@ class Position:
 
 def apply_entry(positions: dict[tuple[int, str], Position], e: LedgerEntry) -> None:
     """Aggiorna le posizioni con una riga del ledger (prezzo medio ponderato)."""
-    if e.instrument_id is None or e.kind not in ("buy", "sell", "split"):
+    if e.instrument_id is None or e.kind not in ("buy", "sell", "redemption", "split"):
         return
     key = (e.instrument_id, e.position_side)
     pos = positions.setdefault(key, Position(instrument_id=e.instrument_id, side=e.position_side))
@@ -75,6 +75,14 @@ def position(db: Session, account_id: int, instrument_id: int, side: str = "long
         q = q.where(LedgerEntry.ts < before)
     entries = db.scalars(q.order_by(LedgerEntry.ts, LedgerEntry.id))
     return positions_from_entries(entries).get((instrument_id, side), Position(instrument_id, side))
+
+
+def settled_position(db: Session, account_id: int, instrument_id: int, before: date) -> Position:
+    """Posizione formata dalle operazioni regolate prima di `before` (diritto alla cedola)."""
+    q = select(LedgerEntry).where(LedgerEntry.account_id == account_id, LedgerEntry.instrument_id == instrument_id)
+    entries = [e for e in db.scalars(q.order_by(LedgerEntry.ts, LedgerEntry.id))
+               if (e.settlement_date or e.ts.date()) < before]
+    return positions_from_entries(entries).get((instrument_id, "long"), Position(instrument_id))
 
 
 def cash_balance(db: Session, account_id: int) -> Decimal:

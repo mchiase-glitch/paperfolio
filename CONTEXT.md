@@ -1,6 +1,8 @@
 # PaperFolio – Contesto di progetto
 
 ## Stato attuale
+**Fase 3 completata** (20/11/2026): obbligazioni a tasso fisso e zero coupon (titoli di Stato white list al 12,5%,
+societarie al 26%), rateo con regolamento T+2, cedole, rimborso a scadenza, rendimento a scadenza. 68 test automatici superati.
 **Fase 2 completata** (19/11/2026): ETF armonizzati, dividendi e distribuzioni (ritenuta estera + 26%),
 frazionamenti e raggruppamenti. 51 test automatici superati.
 **Fase 1 completata** (19/11/2026): azioni ITA/EUR/USA, cambio con spread, commissioni, ordini in attesa,
@@ -25,10 +27,10 @@ backend/app/
   migrate.py         alembic upgrade head all'avvio
   scheduler.py       ordini in attesa (ogni 60 s), eventi societari (7:00), valutazione giornaliera (23:00), bollo (1° gennaio)
   api/               portfolio, instruments, orders (+ movimenti e CSV), events, fiscal, settings
-  services/          commission, fx, prices, positions, tax, orders, portfolio, corporate_events, market_hours, settings
+  services/          commission, fx, prices, positions, tax, orders, portfolio, corporate_events, bonds, market_hours, settings
   data_provider/     base (interfaccia), yfinance_adapter, mapping (borse/paesi)
-backend/alembic/versions/  0001_schema_iniziale, 0002_eventi_societari
-backend/tests/       51 test
+backend/alembic/versions/  0001_schema_iniziale, 0002_eventi_societari, 0003_obbligazioni
+backend/tests/       68 test
 frontend/            index.html, css, js/screens/*, manifest.json, sw.js, icons/
 Dockerfile, docker-compose.yml, deploy.sh, .env.example
 ```
@@ -57,7 +59,17 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 - **Split**: quantità × rapporto e costo invariato, quindi il prezzo medio di carico si adegua. Nei raggruppamenti la frazione viene liquidata senza commissioni al prezzo corrente, con calcolo fiscale.
 - **Risultato realizzato**: comprende dividendi e distribuzioni (lordo e netto).
 - **Eventi manuali**: dal dettaglio del titolo si aggiungono dividendi e split che la fonte non riporta.
-- **Derivati e obbligazioni**: campi già presenti nello schema (moltiplicatore, sottostante, strike, scadenza, call/put, lato posizione, margine; cedola, frequenza, scadenza), nessuna logica ancora.
+- **Obbligazioni (fase 3)**:
+  - Inserimento manuale dalla schermata Cerca (ISIN, cedola, frequenza, scadenza, emissione facoltativa, taglio minimo, convenzione giorni, prezzo). Simbolo = ISIN, borsa MOT (calendario XMIL), `data_source = manual`.
+  - Quantità = valore nominale, multiplo del taglio minimo (default 1.000). Prezzo in % del nominale, corso secco: il moltiplicatore dello strumento è 0,01, così controvalore = nominale × prezzo / 100 con la stessa formula delle azioni.
+  - **Regolamento T+2** giorni di borsa (calendario XMIL). Il rateo si calcola alla data di regolamento e la stessa data decide il diritto alla cedola: la cedola spetta a chi ha operazioni regolate *prima* della data di pagamento.
+  - **Rateo**: ACT/ACT ICMA (giorni effettivi / giorni del periodo cedolare) oppure 30E/360. Cedole regolari ricavate a ritroso dalla scadenza; la prima cedola è ridotta se l'emissione cade dentro il periodo (cedola corta).
+  - **Tassazione del rateo** come nei fissati bollati italiani: chi vende incassa il rateo e paga l'imposta dello strumento (12,5% o 26%); chi compra paga il rateo lordo e riceve il credito d'imposta corrispondente; la cedola è tassata per intero. Risultato: si paga l'imposta solo sull'interesse maturato nel periodo di possesso. Nel ledger: `accrued_interest_eur`, `interest_tax_eur` (negativo = credito), `settlement_date`.
+  - Plus/minus sul corso secco, con le regole della categoria (white list: base 48,08% anche per le minus nello zainetto). Niente Tobin tax.
+  - **Cedole e rimborso**: alla creazione del titolo si genera il calendario (`corporate_events` di tipo `coupon` e `redemption`, fonte `schedule`); il job delle 7:00 accredita le cedole al netto e alla scadenza rimborsa al 100% senza commissioni, calcolando plus/minus. Dopo la scadenza (o se il regolamento cadrebbe dopo) il titolo non è più negoziabile e gli ordini in attesa vengono rifiutati.
+  - **Rendimento a scadenza** (nel dettaglio): tasso annuo composto che uguaglia prezzo + rateo ai flussi futuri (giorni/365). Netto: cedole e rateo al netto dell'imposta, imposta sullo scarto positivo tra 100 e prezzo; esclusi commissioni e bollo.
+  - **Portafoglio**: controvalore al corso secco; il rateo maturato è mostrato a parte, entra nel valore totale e nel non realizzato. Il realizzato comprende cedole e ratei incassati meno ratei pagati.
+- **Derivati**: campi già presenti nello schema (moltiplicatore, sottostante, strike, scadenza, call/put, lato posizione, margine), nessuna logica ancora.
 
 ## Fonti dati
 | Tipo | Fonte |
@@ -66,7 +78,7 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 | ETF UCITS | yfinance ✅ (verificato: VHYL.MI, IUSA.DE; mancano paese e calendario) |
 | Dividendi e split | yfinance ✅ (storico per data di stacco; data di pagamento solo per i titoli USA) |
 | Cambi | yfinance (`EURUSD=X`) |
-| BTP/CCT, obbligazioni MOT, certificati, derivati IDEM | nessuna fonte gratuita affidabile → prezzo manuale |
+| BTP/CCT, obbligazioni MOT, certificati, derivati IDEM | nessuna fonte gratuita affidabile → prezzo manuale (obbligazioni: % del nominale, corso secco) |
 
 ## Punti aperti / da verificare
 1. **Porta 8042 sul Pi**: non conosco le porte di CantinApp e degli altri progetti; verificare con `sudo ss -tlnp | grep 8042` (nessun output = libera). Se occupata, cambiare `PORT` in `.env`.
@@ -78,6 +90,10 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 7. **ETF con titoli di Stato**: nella realtà la quota di proventi riferibile ai titoli white list è tassata al 12,5%; qui tutto al 26%.
 8. **Cambio dei dividendi in valuta**: si usa il cambio del momento in cui il job registra l'accredito, non quello esatto della data di pagamento (coincidono se il server è acceso quel giorno).
 9. **Split e ordini in attesa**: un ordine inserito prima di uno split ed eseguito dopo mantiene la quantità originale.
+10. **Obbligazioni non gestite**: tasso variabile (CCT), indicizzate all'inflazione (BTP Italia, BTP€i), prime cedole lunghe, rimborsi anticipati o a rate (amortizing), premi fedeltà.
+11. **Scarto di emissione** (BOT, zero coupon, titoli emessi sotto la pari): nella realtà è reddito di capitale tassato a parte; qui tutta la differenza tra prezzo e rimborso è trattata come plus/minus.
+12. **Cedole nei giorni festivi**: accreditate nella data teorica, non nel primo giorno lavorativo successivo (il rateo non cambia).
+13. **Prezzo manuale e ordini**: con prezzo manuale l'ordine si esegue subito se il MOT è aperto, al prezzo inserito, anche se vecchio. Conviene aggiornarlo prima di comprare o vendere.
 
 ---
 
@@ -120,16 +136,16 @@ Aggiornamenti successivi: `cd ~/paperfolio && ./deploy.sh` (backup DB → git pu
 
 ---
 
-## Prossimi passi – Fase 3 (obbligazioni)
-1. Fonte prezzi: nessuna gratuita affidabile per il MOT → prezzo manuale in % del nominale (corso secco), con etichetta.
-2. Anagrafica: cedola, frequenza, scadenza, emittente, white list (campi già nello schema); categoria `titoli_stato_whitelist` (12,5%) o `obbligazioni_societarie` (26%).
-3. Ordini in nominale; rateo maturato (convenzione di calcolo dei giorni da decidere: ACT/ACT per i BTP) pagato in acquisto e incassato in vendita, tassato all'incasso con l'aliquota dello strumento.
-4. Cedole accreditate al netto; rimborso alla scadenza con calcolo di plus/minus; rendimento a scadenza nel dettaglio.
+## Prossimi passi – Fase 4 (extra)
+1. Grafico storico del valore del portafoglio (da `daily_valuations`) confrontato con un indice (es. FTSE MIB o MSCI World da yfinance).
+2. Watchlist: titoli seguiti senza posizione.
+3. Ordini limite e stop (campo `order_type` già presente in `orders`): eseguiti dal job quando il prezzo tocca il limite.
+4. Più portafogli contemporanei (oggi c'è un solo conto aperto alla volta).
 5. Restano da decidere i punti aperti 2 (rimborso dell'imposta nello stesso anno) e 7 (ETF con titoli di Stato).
 
 ## Piano delle fasi
 1. ✅ Azioni, cambio con spread, commissioni, ordini in attesa, fiscalità 26% + zainetto, bollo, Docker/deploy
 2. ✅ ETF, dividendi, split
-3. Obbligazioni (rateo, cedole, rimborso, regime 12,5%)
+3. ✅ Obbligazioni (rateo, cedole, rimborso, regime 12,5%)
 4. Extra: grafico storico vs indice, watchlist, ordini limite/stop, più portafogli
 5. (Futura) Derivati in solo acquisto

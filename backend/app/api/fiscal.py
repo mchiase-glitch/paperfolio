@@ -23,6 +23,8 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
     totals = {"gains": ZERO, "losses": ZERO, "taxable": ZERO, "tax": ZERO, "commissions": ZERO,
               "tobin": ZERO, "stamp": ZERO, "loss_used": ZERO}
     income = {"gross": ZERO, "withholding": ZERO, "tax": ZERO, "net": ZERO, "count": 0}
+    # Interessi delle obbligazioni: cedole + ratei incassati in vendita − ratei pagati in acquisto
+    interest = {"coupons": ZERO, "accrued": ZERO, "gross": ZERO, "tax": ZERO, "net": ZERO, "count": 0}
     entry_year = {}
     for e in positions.ledger(db, account.id):
         y = portfolio.rome_date(e.ts).year
@@ -39,7 +41,15 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
             income["tax"] += e.tax_eur
             income["net"] += e.cash_delta_eur
             income["count"] += 1
-        if e.kind == "sell":
+        if e.kind == "coupon":
+            interest["coupons"] += e.gross_eur
+            interest["tax"] += e.tax_eur
+            interest["count"] += 1
+        if e.accrued_interest_eur:
+            sign = -1 if e.kind == "buy" else 1
+            interest["accrued"] += sign * e.accrued_interest_eur
+            interest["tax"] += e.interest_tax_eur or ZERO
+        if e.kind in ("sell", "redemption"):
             cat = by_cat.setdefault(e.fiscal_category, {"category": e.fiscal_category,
                                                         "label": labels.get(e.fiscal_category, e.fiscal_category),
                                                         "gains": ZERO, "losses": ZERO, "taxable": ZERO, "tax": ZERO})
@@ -58,6 +68,9 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
         if entry_year.get(u.used_by_entry_id) == year:
             totals["loss_used"] += u.amount_eur
 
+    interest["gross"] = interest["coupons"] + interest["accrued"]
+    interest["net"] = interest["gross"] - interest["tax"]
+
     lots = [{"entry_id": lot.entry_id, "origin": lot.origin, "expiry": lot.expiry, "remaining": lot.remaining,
              "category": labels.get(lot.fiscal_category, lot.fiscal_category),
              "expired": lot.expiry < today} for lot in loss_lots(db, account.id) if lot.remaining > 0]
@@ -69,6 +82,7 @@ def fiscal(year: int | None = None, db: Session = Depends(get_db)):
         "categories": list(by_cat.values()),
         "totals": totals,
         "capital_income": income,
+        "interest_income": interest,
         "zainetto": lots,
         "zainetto_available": sum((lot["remaining"] for lot in lots if not lot["expired"]), ZERO),
         "stamp_duty": {"estimate_current_year": portfolio.stamp_estimate(db, account, now),

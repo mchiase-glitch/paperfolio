@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 
 import exchange_calendars as xcals
@@ -30,3 +30,18 @@ def session_open(mic: str, when: datetime) -> datetime | None:
 
 def next_open(mic: str, when: datetime) -> datetime:
     return _calendar(mic).next_open(_ts(when)).to_pydatetime()
+
+
+def add_sessions(mic: str, d: date, n: int) -> date:
+    """Data che cade `n` giorni di borsa dopo `d` (regolamento T+2)."""
+    try:
+        sessions = _calendar(mic).sessions_in_range(pd.Timestamp(d + timedelta(days=1)),
+                                                    pd.Timestamp(d + timedelta(days=20)))
+    except Exception:
+        sessions = []
+    if len(sessions) < n:  # oltre l'orizzonte del calendario: solo giorni feriali
+        while n > 0:
+            d += timedelta(days=1)
+            n -= d.weekday() < 5
+        return d
+    return sessions[n - 1].date()

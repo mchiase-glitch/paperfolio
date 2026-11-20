@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..data_provider import DataProviderError, get_provider
 from ..database import get_db, utcnow
-from ..models import Instrument
-from ..services import portfolio, positions, prices
+from ..models import Instrument, TaxRule
+from ..services import bonds, corporate_events, portfolio, positions, prices
 
 router = APIRouter(prefix="/api/instruments", tags=["strumenti"])
 
@@ -23,17 +23,23 @@ def unsupported_reason(itype: str, market: str | None) -> str | None:
     if itype == "etf" and market == "USA":
         # Gli ETF USA non sono UCITS e non sono acquistabili dai risparmiatori italiani
         return "ETF non armonizzato (USA)"
+    if itype == "bond":
+        return "le obbligazioni si inseriscono a mano"
     if itype not in FISCAL_BY_TYPE:
         return "disponibile nelle prossime fasi"
     return None
 
 
 def instrument_dict(inst: Instrument) -> dict:
-    return {
+    d = {
         "id": inst.id, "symbol": inst.symbol, "isin": inst.isin, "name": inst.name, "type": inst.type,
         "market": inst.market, "exchange": inst.exchange, "currency": inst.currency, "country": inst.country,
         "fiscal_category": inst.fiscal_category, "data_source": inst.data_source,
     }
+    if inst.type == "bond":
+        d.update(coupon_rate=inst.coupon_rate, coupon_frequency=inst.coupon_frequency, maturity=inst.maturity,
+                 issue_date=inst.issue_date, lot_size=inst.lot_size, day_count=inst.day_count)
+    return d
 
 
 @router.get("/search")
@@ -118,6 +124,44 @@ def add_manual(body: ManualInstrument, db: Session = Depends(get_db)):
     return instrument_dict(inst)
 
 
+class BondInstrument(BaseModel):
+    name: str = Field(min_length=2)
+    isin: str = Field(min_length=12, max_length=12)
+    category: Literal["titoli_stato_whitelist", "obbligazioni_societarie"]
+    country: str | None = Field(default=None, max_length=2)
+    currency: str = "EUR"
+    coupon_rate: Decimal = Field(ge=0, lt=1)  # annuo, es. 0.035 per 3,50%
+    coupon_frequency: Literal[1, 2, 4, 12] = 2
+    maturity: date
+    issue_date: date | None = None
+    lot_size: Decimal = Field(default=Decimal("1000"), gt=0)
+    day_count: Literal["ACT/ACT", "30/360"] = "ACT/ACT"
+    price: Decimal = Field(gt=0, lt=1000)  # % del nominale, corso secco
+
+
+@router.post("/bond")
+def add_bond(body: BondInstrument, db: Session = Depends(get_db)):
+    """Obbligazione quotata su MOT/EuroTLX con prezzo manuale: nessuna fonte gratuita affidabile."""
+    isin = body.isin.upper()
+    if db.scalar(select(Instrument).where(Instrument.symbol == isin)):
+        raise HTTPException(400, "Obbligazione già presente")
+    today = portfolio.rome_date(utcnow())
+    if body.maturity <= today:
+        raise HTTPException(400, "La scadenza deve essere futura")
+    if body.issue_date and body.issue_date >= body.maturity:
+        raise HTTPException(400, "L'emissione deve precedere la scadenza")
+    inst = Instrument(symbol=isin, isin=isin, name=body.name.strip(), type="bond", market="ITA", exchange="XMIL",
+                      currency=body.currency.upper(), country=(body.country or isin[:2]).upper(),
+                      fiscal_category=body.category, data_source="manual", multiplier=Decimal("0.01"),
+                      coupon_rate=body.coupon_rate, coupon_frequency=body.coupon_frequency, maturity=body.maturity,
+                      issue_date=body.issue_date, lot_size=body.lot_size, day_count=body.day_count)
+    db.add(inst)
+    db.flush()
+    prices.set_manual_price(db, inst, body.price, utcnow())
+    corporate_events.create_bond_schedule(db, inst, today)
+    return instrument_dict(inst)
+
+
 class ManualPrice(BaseModel):
     price: Decimal = Field(gt=0)
     price_time: datetime | None = None
@@ -150,6 +194,22 @@ def detail(instrument_id: int, db: Session = Depends(get_db)):
         "instrument": instrument_dict(inst), "quote": quote, "error": error,
         "position": {"quantity": pos.quantity, "avg_price": pos.avg_price, "avg_cost_eur": pos.avg_cost_eur,
                      "cost_eur": pos.cost_fiscal_eur} if pos.quantity else None,
+        "bond": _bond_info(db, inst, quote) if inst.type == "bond" else None,
+    }
+
+
+def _bond_info(db: Session, inst: Instrument, quote: dict | None) -> dict:
+    today = portfolio.rome_date(utcnow())
+    settle = bonds.settlement_date(inst, today)
+    rule = db.get(TaxRule, inst.fiscal_category)
+    tax_rate = rule.rate * rule.base_factor
+    upcoming = bonds.coupon_schedule(inst, today)
+    ytm = bonds.yield_to_maturity(inst, quote["price"], settle, tax_rate) if quote else None
+    return {
+        "settlement_date": settle, "accrued_per100": bonds.accrued_per100(inst, settle),
+        "next_coupon": {"date": upcoming[0][0], "amount": upcoming[0][1]} if upcoming else None,
+        "coupons_left": len(upcoming), "tax_rate": tax_rate, "tax_label": rule.label,
+        "ytm_gross": ytm.gross if ytm else None, "ytm_net": ytm.net if ytm else None,
     }
 
 

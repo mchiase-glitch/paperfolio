@@ -12,7 +12,7 @@ from .. import config
 from ..data_provider import get_provider
 from ..database import utcnow
 from ..models import Account, CorporateEvent, Instrument, LedgerEntry, TaxRule, WithholdingRate
-from . import positions, prices, settings
+from . import bonds, positions, prices, settings
 from .fx import to_eur
 from .money import ZERO, eur
 from .orders import compute, record_trade
@@ -130,10 +130,10 @@ def sync_all(db: Session) -> None:
 # --- Effetti sul conto ------------------------------------------------------------
 
 def _processed(db: Session, account_id: int, ev: CorporateEvent) -> bool:
-    kind = "split" if ev.kind == "split" else "dividend"
+    # La riga principale ha lo stesso tipo dell'evento (la liquidazione delle frazioni è una "sell")
     return db.scalar(select(LedgerEntry.id).where(LedgerEntry.account_id == account_id,
                                                   LedgerEntry.corporate_event_id == ev.id,
-                                                  LedgerEntry.kind == kind)) is not None
+                                                  LedgerEntry.kind == ev.kind)) is not None
 
 
 def _processed_anywhere(db: Session, ev: CorporateEvent) -> bool:
@@ -216,22 +216,81 @@ def apply_split(db: Session, account: Account, inst: Instrument, ev: CorporateEv
     return entry
 
 
+# --- Obbligazioni: cedole e rimborso -----------------------------------------------
+
+def create_bond_schedule(db: Session, inst: Instrument, after: date) -> None:
+    """Calendario delle cedole future e del rimborso, generato dall'anagrafica del titolo."""
+    existing = {(e.kind, e.ex_date) for e in db.scalars(select(CorporateEvent)
+                                                        .where(CorporateEvent.instrument_id == inst.id))}
+    for d, amount in bonds.coupon_schedule(inst, after):
+        if ("coupon", d) not in existing:
+            db.add(CorporateEvent(instrument_id=inst.id, kind="coupon", ex_date=d, pay_date=d, amount=amount,
+                                  source="schedule"))
+    if ("redemption", inst.maturity) not in existing:
+        db.add(CorporateEvent(instrument_id=inst.id, kind="redemption", ex_date=inst.maturity, pay_date=inst.maturity,
+                              amount=bonds.HUNDRED, source="schedule"))
+    db.commit()
+
+
+def credit_coupon(db: Session, account: Account, inst: Instrument, ev: CorporateEvent) -> LedgerEntry | None:
+    """Cedola a chi ha il titolo con regolamento anteriore alla data di pagamento, al netto dell'imposta."""
+    qty = positions.settled_position(db, account.id, inst.id, ev.ex_date).quantity
+    if qty <= 0:
+        return None
+    fx_market, _ = prices.get_fx(db, inst.currency)
+    gross_ccy = qty * ev.amount / 100
+    conv = to_eur(gross_ccy, inst.currency, fx_market, settings.get_decimal(db, "fx_spread"), "sell")
+    gross_eur = eur(conv.amount_eur)
+    rule = db.get(TaxRule, inst.fiscal_category)
+    tax = eur(gross_eur * rule.rate * rule.base_factor)
+    entry = LedgerEntry(
+        account_id=account.id, ts=day_start(ev.ex_date), kind="coupon", instrument_id=inst.id, quantity=qty,
+        price=ev.amount, price_currency=inst.currency, fx_market=conv.market_rate, fx_spread=conv.spread,
+        fx_applied=conv.applied_rate, gross_eur=gross_eur, tax_eur=tax, cash_delta_eur=gross_eur - tax,
+        fiscal_category=inst.fiscal_category, corporate_event_id=ev.id,
+        description=f"Cedola del {ev.ex_date:%d/%m/%Y}: {it_num(ev.amount)} ogni 100 di nominale × {it_num(qty)}",
+    )
+    db.add(entry)
+    return entry
+
+
+def redeem(db: Session, account: Account, inst: Instrument, ev: CorporateEvent) -> LedgerEntry | None:
+    """Rimborso a scadenza al prezzo indicato (di norma 100), senza commissioni, con calcolo di plus/minus."""
+    qty = positions.position(db, account.id, inst.id).quantity
+    if qty <= 0:
+        return None
+    when = day_start(ev.ex_date)
+    fx_market, _ = prices.get_fx(db, inst.currency)
+    p = prices.PriceInfo(ev.amount, None, inst.currency, when, "rimborso", False)
+    pv = compute(db, account, inst, "sell", qty, p, fx_market, when, charge_commission=False, settlement=ev.ex_date)
+    return record_trade(db, account, inst, pv, when, kind="redemption", corporate_event_id=ev.id,
+                        description=f"Rimborso a scadenza al {it_num(ev.amount)}% di {it_num(qty)} nominali")
+
+
+HANDLERS = {"split": apply_split, "dividend": credit_dividend, "coupon": credit_coupon, "redemption": redeem}
+
+
+def _due(ev: CorporateEvent, today: date) -> bool:
+    if ev.kind == "dividend":
+        return ev.amount is not None and ev.pay_date is not None and ev.pay_date <= today
+    return ev.ex_date <= today
+
+
 def process(db: Session, now: datetime | None = None) -> int:
-    """Applica gli split dalla data di efficacia e accredita i dividendi alla data di pagamento."""
+    """Applica split, dividendi, cedole e rimborsi maturati (in ordine di data)."""
     today = (now or utcnow()).astimezone(ROME).date()
     done = 0
     accounts = list(db.scalars(select(Account).where(Account.closed_at.is_(None))))
-    for ev in db.scalars(select(CorporateEvent).order_by(CorporateEvent.ex_date, CorporateEvent.id)):
-        due = (ev.kind == "split" and ev.ex_date <= today) or \
-              (ev.kind == "dividend" and ev.amount is not None and ev.pay_date is not None and ev.pay_date <= today)
-        if not due:
+    q = select(CorporateEvent).where(CorporateEvent.ex_date <= today)
+    for ev in list(db.scalars(q.order_by(CorporateEvent.ex_date, CorporateEvent.id))):
+        if not _due(ev, today):
             continue
         inst = db.get(Instrument, ev.instrument_id)
         for account in accounts:
             if _processed(db, account.id, ev):
                 continue
             try:
-                entry = apply_split(db, account, inst, ev) if ev.kind == "split" else credit_dividend(db, account, inst, ev)
+                entry = HANDLERS[ev.kind](db, account, inst, ev)
                 db.commit()
                 done += entry is not None
             except Exception as exc:

@@ -19,6 +19,18 @@ export function price(v, currency) {
   return `${num(v, digits, 2)} ${currency === "EUR" ? "€" : currency}`;
 }
 
+// Prezzo di uno strumento: le obbligazioni sono quotate in % del nominale (corso secco)
+export function instPrice(v, type, currency) {
+  if (type !== "bond") return price(v, currency);
+  if (v === null || v === undefined) return "—";
+  return `${num(v, 3, 2)}%`;
+}
+
+// Quantità: per le obbligazioni è il valore nominale
+export function qty(v, type, currency = "EUR") {
+  return type === "bond" ? money(v, currency, 0) : num(v, 6);
+}
+
 export function pct(v, digits = 2) {
   if (v === null || v === undefined) return "—";
   const n = Number(v);
@@ -80,3 +92,4 @@ export function esc(s) {
 
 export const TYPE_LABELS = { stock: "Azioni", etf: "ETF", bond: "Obbligazioni", derivative: "Derivati" };
 export const MARKET_LABELS = { ITA: "Borsa Italiana", EUR: "Europa", USA: "USA" };
+export const FREQ_LABELS = { 1: "annuale", 2: "semestrale", 4: "trimestrale", 12: "mensile" };

@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { cls, date, dateTime, esc, money, num, pct, price, priceTime, signedMoney, TYPE_LABELS } from "../format.js";
+import { cls, date, dateTime, esc, instPrice, money, num, pct, priceTime, qty, signedMoney, toPercent, TYPE_LABELS } from "../format.js";
 
 export async function renderPortfolio(el) {
   const load = async () => {
@@ -27,6 +27,7 @@ function summary(p) {
       <div class="kv"><span class="k">Liquidità disponibile</span><span class="v">${money(p.available)}</span></div>
       <div class="kv"><span class="k">Liquidità prenotata</span><span class="v">${money(p.reserved)}</span></div>
       <div class="kv"><span class="k">Controvalore titoli</span><span class="v">${money(p.positions_value)}</span></div>
+      ${Number(p.accrued_interest) ? `<div class="kv"><span class="k">Ratei maturati</span><span class="v">${money(p.accrued_interest)}</span></div>` : ""}
       <div class="kv"><span class="k">Capitale iniziale</span><span class="v">${money(p.initial_capital)}</span></div>
     </div>
   </section>
@@ -41,7 +42,7 @@ function summary(p) {
       <div class="kv"><span class="k">Realizzato netto</span><span class="v ${cls(pl.realized_net)}">${signedMoney(pl.realized_net)}</span></div>
     </div>
     <div class="divider"></div>
-    <div class="small muted">Il realizzato comprende dividendi e distribuzioni. Netto = al netto di commissioni, imposte, ritenute, Tobin tax e bollo (stima bollo ${new Date().getFullYear()}: ${money(p.stamp_duty_estimate)}). Il non realizzato netto stima commissione e imposta di un'eventuale vendita, senza zainetto.</div>
+    <div class="small muted">Il realizzato comprende dividendi, distribuzioni, cedole e ratei incassati meno quelli pagati; il non realizzato comprende i ratei maturati. Netto = al netto di commissioni, imposte, ritenute, Tobin tax e bollo (stima bollo ${new Date().getFullYear()}: ${money(p.stamp_duty_estimate)}). Il non realizzato netto stima commissione e imposta di un'eventuale vendita, senza zainetto.</div>
   </section>
   <div class="refresh-line"><span>Aggiornato ${dateTime(p.as_of)}</span><button class="btn small" id="refresh">Aggiorna</button></div>`;
 }
@@ -76,10 +77,11 @@ function card(x) {
     return `<article class="card position" data-instrument="${x.instrument_id}">
       <div class="head"><div><div class="name">${esc(x.name)}</div><span class="tag">${esc(x.symbol)}</span></div></div>
       <div class="error small">Prezzo non disponibile: ${esc(x.error)}</div>
-      <div class="row"><span class="k">Quantità</span><span class="v">${x.quantity}</span></div>
-      <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${price(x.avg_price, x.currency)}</span></div>
+      <div class="row"><span class="k">${x.type === "bond" ? "Nominale" : "Quantità"}</span><span class="v">${qty(x.quantity, x.type, x.currency)}</span></div>
+      <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${instPrice(x.avg_price, x.type, x.currency)}</span></div>
     </article>`;
   }
+  const bond = x.type === "bond";
   return `<article class="card position" data-instrument="${x.instrument_id}">
     <div class="head">
       <div>
@@ -88,13 +90,15 @@ function card(x) {
       </div>
       <div class="pl ${cls(x.pnl_gross_eur)}">${signedMoney(x.pnl_gross_eur)}<div class="small">${pct(x.pnl_pct)}</div></div>
     </div>
-    <div class="row"><span class="k">Quantità</span><span class="v">${x.quantity}</span></div>
-    <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${price(x.avg_price, x.currency)}</span></div>
-    <div class="row"><span class="k">Prezzo attuale <span class="small">(${priceTime(x.price_time)})</span></span><span class="v">${price(x.price, x.currency)}</span></div>
+    ${bond ? `<div class="small muted" style="margin-bottom:4px">Cedola ${num(toPercent(x.coupon_rate), 4, 2)}% · scadenza ${date(x.maturity)}</div>` : ""}
+    <div class="row"><span class="k">${bond ? "Nominale" : "Quantità"}</span><span class="v">${qty(x.quantity, x.type, x.currency)}</span></div>
+    <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${instPrice(x.avg_price, x.type, x.currency)}</span></div>
+    <div class="row"><span class="k">Prezzo attuale <span class="small">(${priceTime(x.price_time)})</span></span><span class="v">${instPrice(x.price, x.type, x.currency)}</span></div>
     <div class="row"><span class="k">Variazione titolo oggi</span><span class="v ${cls(x.day_change_pct)}">${pct(x.day_change_pct)}</span></div>
     <div class="row"><span class="k">Risultato di oggi</span><span class="v ${cls(x.day_change_eur)}">${signedMoney(x.day_change_eur)}</span></div>
     ${foreign ? `<div class="row"><span class="k">Controvalore in ${x.currency}</span><span class="v">${money(x.market_value_ccy, x.currency)}</span></div>` : ""}
-    <div class="row total"><span class="k">Controvalore</span><span class="v">${money(x.market_value_eur)}</span></div>
+    <div class="row total"><span class="k">Controvalore${bond ? " (corso secco)" : ""}</span><span class="v">${money(x.market_value_eur)}</span></div>
+    ${x.accrued_eur ? `<div class="row"><span class="k">Rateo maturato</span><span class="v">${money(x.accrued_eur)}</span></div>` : ""}
     <div class="row"><span class="k">Plus/minus netto stimato</span><span class="v ${cls(x.pnl_net_eur)}">${signedMoney(x.pnl_net_eur)}</span></div>
   </article>`;
 }

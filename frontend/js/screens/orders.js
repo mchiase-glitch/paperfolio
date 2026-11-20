@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { toast } from "../app.js";
-import { cls, dateTime, esc, money, price, signedMoney } from "../format.js";
+import { cls, date, dateTime, esc, instPrice, money, qty, signedMoney } from "../format.js";
 
 const STATUS = { pending: "In attesa", executed: "Eseguito", cancelled: "Annullato", rejected: "Rifiutato" };
 let tab = "orders";
@@ -33,9 +33,9 @@ async function ordersHtml() {
   const row = (o) => `
     <div class="list-item">
       <div class="main">
-        <div class="title">${o.side === "buy" ? "Acquisto" : "Vendita"} ${o.quantity} ${esc(o.name)}</div>
+        <div class="title">${o.side === "buy" ? "Acquisto" : "Vendita"} ${qty(o.quantity, o.instrument_type, o.currency)} ${esc(o.name)}</div>
         <div class="small muted">Inserito ${dateTime(o.created_at)}${o.executed_at ? ` · eseguito ${dateTime(o.executed_at)}` : ""}${o.cancelled_at ? ` · annullato ${dateTime(o.cancelled_at)}` : ""}</div>
-        ${o.execution ? `<div class="small">a ${price(o.execution.price, o.execution.price_currency)} · netto ${money(Math.abs(Number(o.execution.cash_delta_eur)))}</div>` : ""}
+        ${o.execution ? `<div class="small">a ${instPrice(o.execution.price, o.instrument_type, o.execution.price_currency)}${Number(o.execution.accrued_interest_eur) ? ` + rateo ${money(o.execution.accrued_interest_eur)}` : ""} · netto ${money(Math.abs(Number(o.execution.cash_delta_eur)))}</div>` : ""}
         ${o.status === "pending" && o.side === "buy" ? `<div class="small muted">Liquidità prenotata ${money(o.reserved_eur)}</div>` : ""}
         ${o.note ? `<div class="small muted">${esc(o.note)}</div>` : ""}
       </div>
@@ -52,9 +52,10 @@ async function movementsHtml() {
     <div class="list-item">
       <div class="main">
         <div class="title">${esc(m.label)}${m.name ? " " + esc(m.name) : ""}</div>
-        <div class="small muted">${dateTime(m.ts)}${m.quantity && (m.kind === "buy" || m.kind === "sell") ? ` · ${m.quantity} a ${price(m.price, m.price_currency)}` : ""}${m.description ? " · " + esc(m.description) : ""}</div>
-        ${m.kind === "dividend" ? `<div class="small muted">Lordo ${money(m.gross_eur)}${Number(m.withholding_eur) ? ` · ritenuta estera ${money(m.withholding_eur)}` : ""} · imposta ${money(m.tax_eur)}</div>` : ""}
-        ${m.kind === "buy" || m.kind === "sell" ? `<div class="small muted">Commissione ${money(m.commission_eur)}${Number(m.tobin_tax_eur) ? ` · Tobin ${money(m.tobin_tax_eur)}` : ""}${Number(m.tax_eur) ? ` · imposte ${money(m.tax_eur)}` : ""}${m.realized_fiscal_eur !== null ? ` · plus/minus <span class="${cls(m.realized_fiscal_eur)}">${signedMoney(m.realized_fiscal_eur)}</span>` : ""}</div>` : ""}
+        <div class="small muted">${dateTime(m.ts)}${m.quantity && (m.kind === "buy" || m.kind === "sell") ? ` · ${qty(m.quantity, m.instrument_type, m.price_currency)} a ${instPrice(m.price, m.instrument_type, m.price_currency)}` : ""}${m.description ? " · " + esc(m.description) : ""}</div>
+        ${m.kind === "dividend" || m.kind === "coupon" ? `<div class="small muted">Lordo ${money(m.gross_eur)}${Number(m.withholding_eur) ? ` · ritenuta estera ${money(m.withholding_eur)}` : ""} · imposta ${money(m.tax_eur)}</div>` : ""}
+        ${Number(m.accrued_interest_eur) ? `<div class="small muted">Rateo lordo ${money(m.accrued_interest_eur)} (regolamento ${date(m.settlement_date)}) · ${Number(m.interest_tax_eur) < 0 ? "credito d'imposta" : "imposta"} ${money(Math.abs(Number(m.interest_tax_eur)))}</div>` : ""}
+        ${["buy", "sell", "redemption"].includes(m.kind) ? `<div class="small muted">Commissione ${money(m.commission_eur)}${Number(m.tobin_tax_eur) ? ` · Tobin ${money(m.tobin_tax_eur)}` : ""}${Number(m.tax_eur) ? ` · imposte ${money(m.tax_eur)}` : ""}${m.realized_fiscal_eur !== null ? ` · plus/minus <span class="${cls(m.realized_fiscal_eur)}">${signedMoney(m.realized_fiscal_eur)}</span>` : ""}</div>` : ""}
       </div>
       <div class="right num ${cls(m.cash_delta_eur)}">${m.kind === "split" ? "" : signedMoney(m.cash_delta_eur)}</div>
     </div>`).join("");

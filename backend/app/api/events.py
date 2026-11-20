@@ -24,7 +24,7 @@ def event_dict(db: Session, ev: CorporateEvent, account_id: int) -> dict:
         "pay_date_estimated": bool(ev.pay_date_estimated), "amount": ev.amount, "ratio": ev.ratio,
         "label": corporate_events.split_label(ev.ratio) if ev.kind == "split" else None,
         "source": ev.source, "processed": credited is not None,
-        "net_eur": credited.cash_delta_eur if credited is not None and ev.kind == "dividend" else None,
+        "net_eur": credited.cash_delta_eur if credited is not None and ev.kind != "split" else None,
         "editable": not corporate_events._processed_anywhere(db, ev),
     }
 

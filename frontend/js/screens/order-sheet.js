@@ -1,13 +1,18 @@
 import { api } from "../api.js";
 import { closeSheet, openSheet, toast } from "../app.js";
-import { cls, dateTime, esc, money, num, price, priceTime, signedMoney } from "../format.js";
+import { cls, date, dateTime, esc, instPrice, money, num, priceTime, signedMoney } from "../format.js";
 
 export function openOrderSheet(inst, side, pos) {
   const isBuy = side === "buy";
+  const isBond = inst.type === "bond";
+  const lot = isBond ? Number(inst.lot_size) : 1;
+  const label = isBond
+    ? `Valore nominale (${inst.currency}, multipli di ${num(lot, 0)})${!isBuy && pos ? ` · posseduto ${num(pos.quantity, 0)}` : ""}`
+    : `Quantità${!isBuy && pos ? ` (possedute: ${pos.quantity})` : ""}`;
   const sheet = openSheet(`
     <h3>${isBuy ? "Compra" : "Vendi"} ${esc(inst.name)}</h3>
-    <label class="field"><span>Quantità${!isBuy && pos ? ` (possedute: ${pos.quantity})` : ""}</span>
-      <input type="number" inputmode="numeric" min="1" step="1" id="qty" placeholder="0" autofocus></label>
+    <label class="field"><span>${label}</span>
+      <input type="number" inputmode="numeric" min="${lot}" step="${lot}" id="qty" placeholder="${isBond ? num(lot * 10, 0).replace(/\./g, "") : "0"}" autofocus></label>
     <div class="small muted">Ordine a mercato</div>
     <div id="summary"></div>
     <div class="error small" id="err"></div>
@@ -60,16 +65,20 @@ export function openOrderSheet(inst, side, pos) {
 function render(pv, inst) {
   const foreign = inst.currency !== "EUR";
   const isBuy = pv.side === "buy";
+  const isBond = inst.type === "bond";
+  const taxOnAccrued = Number(pv.interest_tax_eur);
   const rows = [
-    ["Prezzo", `${price(pv.price, pv.price_currency)} <span class="small muted">(${priceTime(pv.price_time)})</span>${pv.is_manual ? ' <span class="tag manual">prezzo manuale</span>' : ""}`],
-    ["Rateo", inst.type === "bond" ? money(pv.accrued_interest_eur) : '<span class="muted">non applicabile</span>'],
+    ["Prezzo", `${instPrice(pv.price, inst.type, pv.price_currency)} <span class="small muted">(${priceTime(pv.price_time)})</span>${pv.is_manual ? ' <span class="tag manual">prezzo manuale</span>' : ""}`],
     foreign ? [`Controvalore in ${pv.price_currency}`, money(pv.gross_ccy, pv.price_currency)] : null,
     foreign ? ["Cambio di mercato", num(pv.fx_market, 5)] : null,
     foreign ? [`Cambio applicato (spread ${num(Number(pv.fx_spread) * 100, 3)}%)`, num(pv.fx_applied, 5)] : null,
-    ["Controvalore", money(pv.gross_eur)],
+    [isBond ? "Controvalore (corso secco)" : "Controvalore", money(pv.gross_eur)],
+    isBond ? [`Rateo lordo <span class="small muted">(regolamento ${date(pv.settlement_date)})</span>`, money(pv.accrued_interest_eur)]
+      : ["Rateo", '<span class="muted">non applicabile</span>'],
+    isBond && taxOnAccrued ? [isBuy ? "Credito d'imposta sul rateo" : "Imposta sul rateo", money(Math.abs(taxOnAccrued))] : null,
     ["Commissione", money(pv.commission_eur)],
     ["Tobin tax", money(pv.tobin_tax_eur)],
-    ["Imposta stimata", money(pv.tax_eur)],
+    [isBond ? "Imposta stimata sulla plusvalenza" : "Imposta stimata", money(pv.tax_eur)],
     !isBuy && pv.realized_fiscal_eur !== null ? ["Plus/minus fiscale", `<span class="${cls(pv.realized_fiscal_eur)}">${signedMoney(pv.realized_fiscal_eur)}</span>`] : null,
   ].filter(Boolean);
   return `<div class="card" style="padding:4px 0;box-shadow:none">

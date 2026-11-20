@@ -1,6 +1,6 @@
 import { api } from "../api.js";
 import { closeSheet, openSheet, setTitle, toast } from "../app.js";
-import { cls, date, esc, money, num, pct, price, priceTime, signedMoney, MARKET_LABELS, TYPE_LABELS } from "../format.js";
+import { cls, date, esc, instPrice, money, num, pct, priceTime, qty, signedMoney, toPercent, FREQ_LABELS, MARKET_LABELS, TYPE_LABELS } from "../format.js";
 import { openOrderSheet } from "./order-sheet.js";
 
 export async function renderDetail(el, id) {
@@ -9,16 +9,18 @@ export async function renderDetail(el, id) {
   setTitle(inst.name);
   const q = d.quote;
   const pos = d.position;
+  const isBond = inst.type === "bond";
+  const factor = isBond ? 0.01 : 1;
   el.innerHTML = `
     <section class="card">
-      <div class="small muted">${esc(inst.symbol)}${inst.isin ? " · " + esc(inst.isin) : ""} · ${MARKET_LABELS[inst.market] || inst.market} · ${TYPE_LABELS[inst.type]}</div>
+      <div class="small muted">${esc(inst.symbol)}${inst.isin && inst.isin !== inst.symbol ? " · " + esc(inst.isin) : ""} · ${MARKET_LABELS[inst.market] || inst.market} · ${TYPE_LABELS[inst.type]}</div>
       ${q ? `
-        <div class="quote-big">${price(q.price, q.currency)}</div>
+        <div class="quote-big">${instPrice(q.price, inst.type, q.currency)}${isBond ? ' <span class="small muted">corso secco</span>' : ""}</div>
         <div class="${cls(q.change_pct)}">${q.change_pct !== null ? pct(q.change_pct) + " rispetto alla chiusura precedente" : ""}</div>
         <div class="small muted">Ultimo prezzo: ${priceTime(q.price_time)} (ora di Roma)
           ${q.is_manual ? ' <span class="tag manual">prezzo manuale</span>' : " · ritardato circa 15 min"}
           ${q.stale ? ' <span class="tag stale">fonte non raggiungibile</span>' : ""}</div>
-        ${inst.currency !== "EUR" ? `<div class="small muted">Cambio EUR/${inst.currency}: ${num(q.fx_market, 5)} (mercato) · ≈ ${money(Number(q.price) / Number(q.fx_market))}</div>` : ""}
+        ${inst.currency !== "EUR" ? `<div class="small muted">Cambio EUR/${inst.currency}: ${num(q.fx_market, 5)} (mercato)${isBond ? "" : ` · ≈ ${money(Number(q.price) / Number(q.fx_market))}`}</div>` : ""}
       ` : `<div class="error">${esc(d.error || "Prezzo non disponibile")}</div>`}
       ${inst.data_source === "manual" ? '<button class="btn small" id="manual" style="margin-top:8px">Aggiorna prezzo manuale</button>' : ""}
     </section>
@@ -29,13 +31,15 @@ export async function renderDetail(el, id) {
       </div>
       <div id="chart"><div class="empty small">Caricamento grafico…</div></div>
     </section>` : ""}
+    ${isBond ? bondCard(inst, d.bond, pos) : ""}
     <section class="card">
       <h2>La mia posizione</h2>
       ${pos ? `
-        <div class="row"><span class="k">Quantità</span><span class="v">${pos.quantity}</span></div>
-        <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${price(pos.avg_price, inst.currency)}</span></div>
+        <div class="row"><span class="k">${isBond ? "Valore nominale" : "Quantità"}</span><span class="v">${qty(pos.quantity, inst.type, inst.currency)}</span></div>
+        <div class="row"><span class="k">Prezzo medio di carico</span><span class="v">${instPrice(pos.avg_price, inst.type, inst.currency)}</span></div>
         <div class="row"><span class="k">Costo fiscale (con commissioni)</span><span class="v">${money(pos.cost_eur)}</span></div>
-        ${q ? `<div class="row total"><span class="k">Controvalore</span><span class="v">${money(Number(pos.quantity) * Number(q.price) / Number(q.fx_market))}</span></div>` : ""}
+        ${q ? `<div class="row total"><span class="k">Controvalore${isBond ? " (corso secco)" : ""}</span><span class="v">${money(Number(pos.quantity) * Number(q.price) * factor / Number(q.fx_market))}</span></div>` : ""}
+        ${isBond && d.bond && q ? `<div class="row"><span class="k">Rateo maturato</span><span class="v">${money(Number(pos.quantity) * Number(d.bond.accrued_per100) / 100 / Number(q.fx_market))}</span></div>` : ""}
       ` : '<div class="muted">Nessuna posizione su questo titolo.</div>'}
     </section>
     <div class="btn-row" style="margin-bottom:12px">
@@ -43,21 +47,27 @@ export async function renderDetail(el, id) {
       <button class="btn sell" id="sell" ${q && pos ? "" : "disabled"}>Vendi</button>
     </div>
     <section class="card">
-      <h2>${inst.type === "etf" ? "Distribuzioni" : "Dividendi"} ed eventi societari</h2>
+      <h2>${isBond ? "Cedole e rimborso" : `${inst.type === "etf" ? "Distribuzioni" : "Dividendi"} ed eventi societari`}</h2>
       <div id="events"><div class="empty small">Caricamento…</div></div>
-      <button class="btn small" id="add-event" style="margin-top:8px">+ Aggiungi evento</button>
+      ${isBond ? "" : '<button class="btn small" id="add-event" style="margin-top:8px">+ Aggiungi evento</button>'}
     </section>`;
 
   const eventsEl = el.querySelector("#events");
   const loadEvents = async () => {
-    const { events } = await api.get(`/api/instruments/${id}/events`);
+    let { events } = await api.get(`/api/instruments/${id}/events`);
+    if (isBond) {
+      // Tutte le cedole registrate, ma solo le prossime tre in arrivo più il rimborso
+      const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Rome" });
+      const future = events.filter((e) => !e.processed && e.kind === "coupon" && e.ex_date >= today).reverse().slice(0, 3).reverse();
+      events = events.filter((e) => e.processed || e.kind === "redemption" || future.includes(e));
+    }
     eventsEl.innerHTML = events.length ? events.map((ev) => eventRow(ev, inst)).join("")
       : '<div class="muted small">Nessun evento dalla data del tuo primo acquisto. Gli eventi si aggiornano ogni mattina.</div>';
     eventsEl.querySelectorAll("[data-edit]").forEach((row) => row.addEventListener("click", () =>
       editEvent(events.find((e) => e.id === Number(row.dataset.edit)), inst, loadEvents)));
   };
   loadEvents().catch((e) => (eventsEl.innerHTML = `<div class="error small">${esc(e.message)}</div>`));
-  el.querySelector("#add-event").addEventListener("click", () => addEvent(inst, loadEvents));
+  el.querySelector("#add-event")?.addEventListener("click", () => addEvent(inst, loadEvents));
 
   el.querySelector("#buy").addEventListener("click", () => openOrderSheet(inst, "buy", pos));
   el.querySelector("#sell").addEventListener("click", () => openOrderSheet(inst, "sell", pos));
@@ -94,8 +104,33 @@ function sparkline(points) {
       <span>min ${num(min, 3)} · max ${num(max, 3)}</span><span class="${up ? "pos" : "neg"}">${pct(change)} nel periodo</span></div>`;
 }
 
+function bondCard(inst, b, pos) {
+  const row = (k, v) => `<div class="row"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+  return `<section class="card">
+    <h2>Dati del titolo</h2>
+    ${row("Cedola annua lorda", Number(inst.coupon_rate) ? `${num(toPercent(inst.coupon_rate), 4, 2)}% ${FREQ_LABELS[inst.coupon_frequency]}` : "zero coupon")}
+    ${row("Scadenza", date(inst.maturity))}
+    ${inst.issue_date ? row("Emissione", date(inst.issue_date)) : ""}
+    ${row("Taglio minimo", money(inst.lot_size, inst.currency, 0))}
+    ${b ? `
+      ${row("Tassazione interessi e plus", `${num(toPercent(b.tax_rate), 2, 1)}% <span class="small muted">${esc(b.tax_label)}</span>`)}
+      ${b.next_coupon ? row("Prossima cedola", `${date(b.next_coupon.date)} · ${num(b.next_coupon.amount, 4, 2)} ogni 100`) : ""}
+      ${row(`Rateo per 100 al ${date(b.settlement_date)}`, num(b.accrued_per100, 5, 2))}
+      <div class="divider"></div>
+      ${row("Rendimento a scadenza lordo", b.ytm_gross !== null ? pct(toPercent(b.ytm_gross)) : "—")}
+      ${row("Rendimento a scadenza netto", b.ytm_net !== null ? `<b>${pct(toPercent(b.ytm_net))}</b>` : "—")}
+      <div class="small muted" style="margin-top:6px">Rendimento annuo composto al prezzo attuale più il rateo, con regolamento ${date(b.settlement_date)} (2 giorni di borsa dopo l'ordine). Il netto toglie l'imposta su cedole e scarto di prezzo; esclude commissioni e bollo.</div>` : ""}
+  </section>`;
+}
+
 function eventRow(ev, inst) {
   const status = ev.processed ? '<span class="status executed">Registrato</span>' : '<span class="status pending">In arrivo</span>';
+  if (ev.kind === "coupon" || ev.kind === "redemption") {
+    const title = ev.kind === "coupon" ? `Cedola ${num(ev.amount, 4, 2)} ogni 100` : `Rimborso al ${num(ev.amount, 2)}%`;
+    return `<div class="list-item"><div class="main"><div class="title">${title}</div>
+      <div class="small muted">${ev.kind === "coupon" ? "pagamento" : "scadenza"} ${date(ev.ex_date)}</div></div>
+      <div class="right">${status}${ev.net_eur !== null ? `<div class="small pos">${signedMoney(ev.net_eur)}</div>` : ""}</div></div>`;
+  }
   if (ev.kind === "split") {
     return `<div class="list-item"><div class="main"><div class="title">${esc(ev.label)}</div>
       <div class="small muted">efficace dal ${date(ev.ex_date)}${ev.source === "manual" ? " · inserito a mano" : ""}</div></div>
@@ -166,7 +201,7 @@ function editEvent(ev, inst, reload) {
 
 function manualPrice(inst) {
   const sheet = openSheet(`<h3>Prezzo manuale – ${esc(inst.name)}</h3>
-    <label class="field"><span>Prezzo (${inst.currency})</span><input type="text" inputmode="decimal" id="mp"></label>
+    <label class="field"><span>${inst.type === "bond" ? "Prezzo in % del nominale, corso secco (es. 98,75)" : `Prezzo (${inst.currency})`}</span><input type="text" inputmode="decimal" id="mp"></label>
     <button class="btn primary block" id="save">Salva</button><div class="error small" id="err"></div>`);
   sheet.querySelector("#save").addEventListener("click", async () => {
     try {

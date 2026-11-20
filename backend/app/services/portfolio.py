@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import config
 from ..database import utcnow
 from ..models import Account, DailyValuation, Instrument, LedgerEntry, Order, TaxRule
-from . import corporate_events, positions, prices, settings
+from . import bonds, corporate_events, positions, prices, settings
 from .commission import commission
 from .money import ZERO, eur
 from .orders import _commission_rule
@@ -43,7 +43,7 @@ def _position_rows(db: Session, account: Account, now: datetime) -> list[dict]:
     rows = []
     today_entries = {}
     for e in positions.ledger(db, account.id):
-        if e.kind in ("buy", "sell"):
+        if e.kind in ("buy", "sell", "redemption"):
             today_entries.setdefault(e.instrument_id, []).append(e)
     for (instrument_id, side), pos in positions.open_positions(db, account.id).items():
         inst = db.get(Instrument, instrument_id)
@@ -69,7 +69,12 @@ def _position_rows(db: Session, account: Account, now: datetime) -> list[dict]:
                     qty_start -= sign * e.quantity
                     flows += sign * e.quantity * e.price
             day_ccy = (pos.quantity * p.price - qty_start * p.prev_close - flows) * inst.multiplier
-        row.update(price=p, fx=fx, mv_ccy=mv_ccy, mv_eur=mv_eur, day_eur=day_ccy / fx)
+        # Obbligazioni: rateo che si incasserebbe vendendo oggi (regolamento T+2)
+        accrued_eur = ZERO
+        if inst.type == "bond":
+            settle = bonds.settlement_date(inst, rome_date(now))
+            accrued_eur = pos.quantity * bonds.accrued_per100(inst, settle) / 100 / fx
+        row.update(price=p, fx=fx, mv_ccy=mv_ccy, mv_eur=mv_eur, day_eur=day_ccy / fx, accrued_eur=accrued_eur)
         rows.append(row)
     return rows
 
@@ -156,38 +161,51 @@ def summary(db: Session, account: Account, now: datetime | None = None) -> dict:
     cash = positions.cash_balance(db, account.id)
     reserved = positions.reserved_cash(db, account.id)
 
-    realized_gross = realized_fiscal = sale_taxes = tobin = stamp = dividends_net = ZERO
+    realized_gross = realized_fiscal = sale_taxes = tobin = stamp = income_net = ZERO
     for e in positions.ledger(db, account.id):
-        if e.kind == "sell":
+        if e.kind in ("sell", "redemption"):
             realized_gross += e.realized_gross_eur or ZERO
             realized_fiscal += e.realized_fiscal_eur or ZERO
             sale_taxes += e.tax_eur
-        elif e.kind == "dividend":
+        elif e.kind in ("dividend", "coupon"):
             realized_gross += e.gross_eur
-            dividends_net += e.cash_delta_eur
+            income_net += e.cash_delta_eur
         elif e.kind == "buy":
             tobin += e.tobin_tax_eur
         elif e.kind == "stamp_duty":
             stamp += e.tax_eur
+        if e.accrued_interest_eur:
+            # Rateo pagato in acquisto (costo) e incassato in vendita, al lordo e al netto dell'imposta
+            sign = -1 if e.kind == "buy" else 1
+            realized_gross += sign * e.accrued_interest_eur
+            income_net += sign * e.accrued_interest_eur - (e.interest_tax_eur or ZERO)
 
     out_positions = []
-    mv_total = unreal_gross = unreal_net = day_total = ZERO
+    mv_total = unreal_gross = unreal_net = day_total = accrued_total = ZERO
     for r in rows:
         inst, pos = r["instrument"], r["position"]
         item = {
             "instrument_id": inst.id, "symbol": inst.symbol, "isin": inst.isin, "name": inst.name,
             "type": inst.type, "market": inst.market, "currency": inst.currency, "side": r["side"],
             "quantity": pos.quantity, "avg_price": pos.avg_price, "avg_cost_eur": pos.avg_cost_eur,
-            "cost_eur": eur(pos.cost_fiscal_eur), "error": r["error"],
+            "cost_eur": eur(pos.cost_fiscal_eur), "error": r["error"], "maturity": inst.maturity,
+            "coupon_rate": inst.coupon_rate,
         }
         if r["error"] is None:
             p = r["price"]
-            gross = r["mv_eur"] - pos.cost_gross_eur
             rule = db.get(TaxRule, inst.fiscal_category)
+            accrued = r["accrued_eur"]
+            gross = r["mv_eur"] - pos.cost_gross_eur
             sell_comm = commission(r["mv_eur"], *_comm_args(db, inst))
             fiscal = r["mv_eur"] - sell_comm - pos.cost_fiscal_eur
             est_tax = eur(fiscal * rule.base_factor * rule.rate) if rule and fiscal > 0 else ZERO
             net = fiscal - est_tax
+            if accrued:
+                # Il rateo maturato fa parte del risultato non ancora incassato
+                gross += accrued
+                net += accrued * (1 - rule.rate * rule.base_factor)
+                accrued_total += accrued
+                item["accrued_eur"] = eur(accrued)
             item.update(
                 price=p.price, prev_close=p.prev_close, price_time=p.price_time, is_manual=p.is_manual,
                 stale=p.stale, fx_market=r["fx"], market_value_ccy=r["mv_ccy"], market_value_eur=eur(r["mv_eur"]),
@@ -203,11 +221,11 @@ def summary(db: Session, account: Account, now: datetime | None = None) -> dict:
         out_positions.append(item)
 
     stamp_est = stamp_estimate(db, account, now)
-    realized_net = realized_fiscal - sale_taxes - tobin - stamp + dividends_net
-    total_value = cash + mv_total
+    realized_net = realized_fiscal - sale_taxes - tobin - stamp + income_net
+    total_value = cash + mv_total + accrued_total
     return {
         "account_id": account.id, "as_of": now, "initial_capital": account.initial_capital,
-        "total_value": eur(total_value), "positions_value": eur(mv_total),
+        "total_value": eur(total_value), "positions_value": eur(mv_total), "accrued_interest": eur(accrued_total),
         "cash": eur(cash), "reserved": eur(reserved), "available": eur(cash - reserved),
         "pnl": {
             "day": eur(day_total),

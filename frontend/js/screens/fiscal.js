@@ -37,6 +37,15 @@ export async function renderFiscal(el) {
         ${row("Netto accreditato", money(f.capital_income.net), "total")}` : '<div class="empty">Nessun dividendo nell\'anno</div>'}
       <div class="small muted" style="margin-top:8px">Redditi di capitale: tassati al 26% (sul netto della ritenuta del paese emittente per le azioni estere) e mai compensabili con lo zainetto.</div>
     </section>
+    <h3 class="section-title">Redditi di capitale: interessi delle obbligazioni</h3>
+    <section class="card">
+      ${f.interest_income.count || Number(f.interest_income.accrued) ? `
+        ${row(`Cedole lorde (${f.interest_income.count} accrediti)`, money(f.interest_income.coupons))}
+        ${row("Ratei incassati meno ratei pagati", money(f.interest_income.accrued))}
+        ${row("Imposta (al netto dei crediti sui ratei pagati)", money(f.interest_income.tax))}
+        ${row("Interessi netti", money(f.interest_income.net), "total")}` : '<div class="empty">Nessun interesse nell\'anno</div>'}
+      <div class="small muted" style="margin-top:8px">12,5% per titoli di Stato e sovranazionali white list, 26% per le obbligazioni societarie. Si tassa solo l'interesse maturato nel periodo di possesso: chi compra paga il rateo al venditore e riceve il credito d'imposta corrispondente.</div>
+    </section>
     <h3 class="section-title">Zainetto fiscale</h3>
     <section class="card">
       ${row("Minus compensabili disponibili", money(f.zainetto_available), "total")}
