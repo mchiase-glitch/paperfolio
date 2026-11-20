@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import config, scheduler
-from .api import events, fiscal, instruments, orders, portfolio, settings
+from .api import events, fiscal, instruments, orders, portfolio, settings, watchlist
 from .api.common import DecimalJSONResponse
 from .database import SessionLocal, engine
 from .migrate import upgrade_to_head
@@ -36,8 +36,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PaperFolio", default_response_class=DecimalJSONResponse, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
-for module in (portfolio, instruments, orders, fiscal, settings, events):
+for module in (portfolio, instruments, orders, fiscal, settings, events, watchlist):
     app.include_router(module.router)
+
+
+@app.middleware("http")
+async def no_stale_frontend(request, call_next):
+    """I file dell'interfaccia vanno sempre ricontrollati (risposta 304 se invariati):
+    dopo un deploy il telefono non deve mescolare file vecchi e nuovi."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/api/health")

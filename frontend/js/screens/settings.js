@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { toast } from "../app.js";
+import { refreshAccount, toast } from "../app.js";
 import { esc, fromPercent, money, toPercent, TYPE_LABELS } from "../format.js";
 
 let commType = "stock";
@@ -56,7 +56,22 @@ export async function renderSettings(el) {
     <div class="error small" id="err"></div>
 
     <section class="card" style="margin-top:20px">
-      <h2>Reset del portafoglio</h2>
+      <h2>Portafogli</h2>
+      <div class="small muted" style="margin-bottom:8px">Puoi tenere più portafogli separati (es. "Prudente" e "Dinamico") e passare dall'uno all'altro con il pulsante in alto a destra. Commissioni, aliquote e parametri qui sopra valgono per tutti.</div>
+      <div id="accounts"></div>
+      <label class="field"><span>Nome del portafoglio attivo</span><input type="text" id="acc-name" maxlength="60"></label>
+      <button class="btn block" id="rename">Rinomina</button>
+      <div class="divider"></div>
+      <div class="grid2">
+        <label class="field"><span>Nuovo portafoglio</span><input type="text" id="new-name" maxlength="60" placeholder="Nome"></label>
+        <label class="field"><span>Capitale (€)</span><input type="text" inputmode="decimal" id="new-capital" value="10000"></label>
+      </div>
+      <button class="btn primary block" id="create">Crea portafoglio</button>
+      <button class="btn block" id="close-acc" style="margin-top:8px">Chiudi il portafoglio attivo</button>
+    </section>
+
+    <section class="card">
+      <h2>Reset del portafoglio attivo</h2>
       <div class="small muted" style="margin-bottom:10px">Capitale attuale: ${money(s.initial_capital)}. Il reset addebita il bollo maturato, annulla gli ordini in attesa e riparte da zero con il capitale indicato. Lo storico resta nel database.</div>
       <label class="field"><span>Nuovo capitale iniziale (€)</span><input type="text" inputmode="decimal" id="capital" value="${s.initial_capital}"></label>
       <button class="btn sell block" id="reset">Azzera portafoglio</button>
@@ -95,6 +110,30 @@ export async function renderSettings(el) {
       toast("Impostazioni salvate");
       renderSettings(el);
     } catch (e) { err.textContent = e.message; }
+  });
+
+  // --- Portafogli ---
+  const { accounts } = await api.get("/api/accounts");
+  const cur = accounts.find((a) => a.current);
+  el.querySelector("#accounts").innerHTML = accounts.map((a) => `<div class="row"><span class="k">${esc(a.name)}${a.current ? ' <span class="tag">attivo</span>' : ""}</span><span class="v">${money(a.total_value)}</span></div>`).join("");
+  el.querySelector("#acc-name").value = cur?.name ?? "";
+  const done = async (msg) => { toast(msg); await refreshAccount(); renderSettings(el); };
+  el.querySelector("#rename").addEventListener("click", async () => {
+    try { await api.put(`/api/accounts/${cur.id}`, { name: el.querySelector("#acc-name").value.trim() }); done("Portafoglio rinominato"); }
+    catch (e) { toast(e.message); }
+  });
+  el.querySelector("#create").addEventListener("click", async () => {
+    const name = el.querySelector("#new-name").value.trim();
+    const capital = dec(el.querySelector("#new-capital").value).replace(/\.(?=\d{3}(\D|$))/g, "");
+    if (!name) { toast("Dai un nome al nuovo portafoglio"); return; }
+    try { await api.post("/api/accounts", { name, capital }); done(`Creato "${name}": ora è il portafoglio attivo`); }
+    catch (e) { toast(e.message); }
+  });
+  el.querySelector("#close-acc").addEventListener("click", async () => {
+    if (accounts.length < 2) { toast("È l'unico portafoglio: per ripartire usa il reset qui sotto"); return; }
+    if (!confirm(`Chiudere "${cur.name}"? Il bollo maturato viene addebitato e gli ordini in attesa annullati. Non si potrà riaprire.`)) return;
+    try { await api.post(`/api/accounts/${cur.id}/close`, { confirm: true }); done("Portafoglio chiuso"); }
+    catch (e) { toast(e.message); }
   });
 
   el.querySelector("#reset").addEventListener("click", async () => {

@@ -1,13 +1,15 @@
 # PaperFolio – Contesto di progetto
 
 ## Stato attuale
+**Fase 4 completata** (20/11/2026): più portafogli, ordini limite e stop con scadenza, titoli seguiti (watchlist),
+grafico del rendimento confrontato con un indice. 86 test automatici superati.
 **Fase 3 completata** (20/11/2026): obbligazioni a tasso fisso e zero coupon (titoli di Stato white list al 12,5%,
 societarie al 26%), rateo con regolamento T+2, cedole, rimborso a scadenza, rendimento a scadenza. 68 test automatici superati.
 **Fase 2 completata** (19/11/2026): ETF armonizzati, dividendi e distribuzioni (ritenuta estera + 26%),
 frazionamenti e raggruppamenti. 51 test automatici superati.
 **Fase 1 completata** (19/11/2026): azioni ITA/EUR/USA, cambio con spread, commissioni, ordini in attesa,
 fiscalità 26% con zainetto, bollo, PWA mobile, Docker e deploy sul Pi.
-**Non ancora fatto**: repository GitHub e primo deploy sul Pi (servono i comandi qui sotto, da lanciare a mano).
+**Repository e Pi**: repository privato `mchiase-glitch/paperfolio` su GitHub; app attiva sul Pi (mercuberryPi) sulla porta 8042, con HTTPS tramite `tailscale serve` sulla 8443.
 
 ---
 
@@ -26,11 +28,11 @@ backend/app/
   models.py          tabelle
   migrate.py         alembic upgrade head all'avvio
   scheduler.py       ordini in attesa (ogni 60 s), eventi societari (7:00), valutazione giornaliera (23:00), bollo (1° gennaio)
-  api/               portfolio, instruments, orders (+ movimenti e CSV), events, fiscal, settings
+  api/               portfolio (+ storico e portafogli), instruments, orders (+ movimenti e CSV), events, fiscal, settings, watchlist
   services/          commission, fx, prices, positions, tax, orders, portfolio, corporate_events, bonds, market_hours, settings
   data_provider/     base (interfaccia), yfinance_adapter, mapping (borse/paesi)
-backend/alembic/versions/  0001_schema_iniziale, 0002_eventi_societari, 0003_obbligazioni
-backend/tests/       68 test
+backend/alembic/versions/  0001_schema_iniziale, 0002_eventi_societari, 0003_obbligazioni, 0004_extra
+backend/tests/       86 test
 frontend/            index.html, css, js/screens/*, manifest.json, sw.js, icons/
 Dockerfile, docker-compose.yml, deploy.sh, .env.example
 ```
@@ -69,6 +71,11 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
   - **Cedole e rimborso**: alla creazione del titolo si genera il calendario (`corporate_events` di tipo `coupon` e `redemption`, fonte `schedule`); il job delle 7:00 accredita le cedole al netto e alla scadenza rimborsa al 100% senza commissioni, calcolando plus/minus. Dopo la scadenza (o se il regolamento cadrebbe dopo) il titolo non è più negoziabile e gli ordini in attesa vengono rifiutati.
   - **Rendimento a scadenza** (nel dettaglio): tasso annuo composto che uguaglia prezzo + rateo ai flussi futuri (giorni/365). Netto: cedole e rateo al netto dell'imposta, imposta sullo scarto positivo tra 100 e prezzo; esclusi commissioni e bollo.
   - **Portafoglio**: controvalore al corso secco; il rateo maturato è mostrato a parte, entra nel valore totale e nel non realizzato. Il realizzato comprende cedole e ratei incassati meno ratei pagati.
+- **Più portafogli (fase 4)**: più conti aperti insieme, ciascuno con liquidità, posizioni, ordini, zainetto e bollo separati. Il portafoglio attivo è salvato sul server (`app_settings.current_account_id`), quindi è lo stesso su telefono e PC; si cambia dal pulsante col nome in alto a destra. Creazione, rinomina e chiusura da Impostazioni; non si può chiudere l'ultimo (c'è il reset). Commissioni, aliquote e parametri sono comuni a tutti. Il reset mantiene il nome.
+- **Ordini limite e stop (fase 4)**: `orders.order_type` (market/limit/stop), `trigger_price`, `expires_on` (default +30 giorni). Limite: compra a prezzo ≤ limite, vende a prezzo ≥ limite. Stop: compra quando il prezzo sale alla soglia, vende quando scende alla soglia (stop loss). Il job ogni minuto, a borsa aperta e con un prezzo della seduta, esegue al prezzo di mercato del momento (non al limite). Se la condizione è già vera all'inserimento l'ordine si esegue subito. Prenotazione in acquisto al prezzo peggiore prevedibile (il limite, o il maggiore tra soglia di stop e prezzo attuale) + margine. Scaduta la validità l'ordine passa a "Scaduto" e libera la liquidità.
+- **Watchlist (fase 4)**: tabella `watchlist`, comune a tutti i portafogli; stella nel dettaglio del titolo, elenco "Titoli seguiti" in fondo al Portafoglio.
+- **Grafico del rendimento (fase 4)**: valore totale di ogni sera = controvalore salvato in `daily_valuations` + liquidità ricostruita dal ledger; ultimo punto = valore attuale; primo punto = apertura del conto (capitale iniziale). Rendimento rispetto al capitale iniziale. Indici di confronto da yfinance (FTSE MIB, Euro Stoxx 50, MSCI World tramite ETF SWDA in €, S&P 500 in $), solo prezzo e senza dividendi, in base alla chiusura disponibile in ogni data; cache di un'ora.
+- **Cache dell'interfaccia**: il server risponde con `Cache-Control: no-cache` ai file dell'interfaccia e il service worker li ricontrolla sempre, così dopo un deploy il telefono non mescola file vecchi e nuovi.
 - **Derivati**: campi già presenti nello schema (moltiplicatore, sottostante, strike, scadenza, call/put, lato posizione, margine), nessuna logica ancora.
 
 ## Fonti dati
@@ -93,7 +100,9 @@ Dockerfile, docker-compose.yml, deploy.sh, .env.example
 10. **Obbligazioni non gestite**: tasso variabile (CCT), indicizzate all'inflazione (BTP Italia, BTP€i), prime cedole lunghe, rimborsi anticipati o a rate (amortizing), premi fedeltà.
 11. **Scarto di emissione** (BOT, zero coupon, titoli emessi sotto la pari): nella realtà è reddito di capitale tassato a parte; qui tutta la differenza tra prezzo e rimborso è trattata come plus/minus.
 12. **Cedole nei giorni festivi**: accreditate nella data teorica, non nel primo giorno lavorativo successivo (il rateo non cambia).
-13. **Prezzo manuale e ordini**: con prezzo manuale l'ordine si esegue subito se il MOT è aperto, al prezzo inserito, anche se vecchio. Conviene aggiornarlo prima di comprare o vendere.
+13. **Prezzo manuale e ordini**: con prezzo manuale l'ordine si esegue subito se il MOT è aperto, al prezzo inserito, anche se vecchio. Conviene aggiornarlo prima di comprare o vendere. Vale anche per limite e stop: scattano quando aggiorni il prezzo.
+14. **Ordini limite e stop con prezzi ritardati**: il controllo usa l'ultimo prezzo di yfinance (ritardato ~15 min, letto ogni minuto). Un movimento rapido che tocca il limite e torna indietro tra due letture non viene visto; l'esecuzione avviene al prezzo letto, che per uno stop può essere peggiore della soglia (come nella realtà in caso di gap).
+15. **Grafico**: mancano i giorni in cui il server era spento; il valore storico non comprende i ratei. Il rendimento non tiene conto di versamenti successivi (oggi non previsti).
 
 ---
 
@@ -116,14 +125,14 @@ gh repo create paperfolio --private --source . --remote origin --push
 ```
 Opzione B, dal sito: crea il repository **privato** `paperfolio` vuoto su github.com, poi:
 ```bash
-git remote add origin git@github.com:<TUO-UTENTE>/paperfolio.git
+git remote add origin git@github.com:mchiase-glitch/paperfolio.git
 git push -u origin main
 ```
 
 ## Deploy sul Raspberry Pi
 Primo avvio:
 ```bash
-cd ~ && git clone git@github.com:<TUO-UTENTE>/paperfolio.git && cd paperfolio
+cd ~ && git clone git@github.com:mchiase-glitch/paperfolio.git && cd paperfolio
 sudo ss -tlnp | grep 8042          # deve non stampare nulla
 cp .env.example .env && nano .env  # PORT, PAPERFOLIO_DATA_DIR, INITIAL_CAPITAL
 chmod +x deploy.sh && ./deploy.sh
@@ -136,16 +145,16 @@ Aggiornamenti successivi: `cd ~/paperfolio && ./deploy.sh` (backup DB → git pu
 
 ---
 
-## Prossimi passi – Fase 4 (extra)
-1. Grafico storico del valore del portafoglio (da `daily_valuations`) confrontato con un indice (es. FTSE MIB o MSCI World da yfinance).
-2. Watchlist: titoli seguiti senza posizione.
-3. Ordini limite e stop (campo `order_type` già presente in `orders`): eseguiti dal job quando il prezzo tocca il limite.
-4. Più portafogli contemporanei (oggi c'è un solo conto aperto alla volta).
+## Prossimi passi – Fase 5 (futura: derivati in solo acquisto)
+1. Opzioni USA e IDEM, futures IDEM, certificati, covered warrant: anagrafica con sottostante, strike, scadenza, call/put e moltiplicatore (campi già nello schema).
+2. Fonte prezzi: yfinance copre le opzioni USA (catena per scadenza); per IDEM, certificati e covered warrant serve il prezzo manuale.
+3. Solo acquisto (long): il divieto di vendita allo scoperto resta attivo. Margini e liquidazione giornaliera dei futures da progettare (campi `margin_eur`, `position_side` già presenti).
+4. Fiscalità: redditi diversi al 26% con zainetto (categoria `derivati` già presente); scadenza delle opzioni senza valore come minusvalenza.
 5. Restano da decidere i punti aperti 2 (rimborso dell'imposta nello stesso anno) e 7 (ETF con titoli di Stato).
 
 ## Piano delle fasi
 1. ✅ Azioni, cambio con spread, commissioni, ordini in attesa, fiscalità 26% + zainetto, bollo, Docker/deploy
 2. ✅ ETF, dividendi, split
 3. ✅ Obbligazioni (rateo, cedole, rimborso, regime 12,5%)
-4. Extra: grafico storico vs indice, watchlist, ordini limite/stop, più portafogli
+4. ✅ Extra: grafico storico vs indice, watchlist, ordini limite/stop, più portafogli
 5. (Futura) Derivati in solo acquisto

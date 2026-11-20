@@ -1,8 +1,9 @@
 import { api } from "../api.js";
 import { toast } from "../app.js";
 import { cls, date, dateTime, esc, instPrice, money, qty, signedMoney } from "../format.js";
+import { orderTypeLabel } from "./order-sheet.js";
 
-const STATUS = { pending: "In attesa", executed: "Eseguito", cancelled: "Annullato", rejected: "Rifiutato" };
+const STATUS = { pending: "In attesa", executed: "Eseguito", cancelled: "Annullato", rejected: "Rifiutato", expired: "Scaduto" };
 let tab = "orders";
 
 export async function renderOrders(el) {
@@ -34,7 +35,8 @@ async function ordersHtml() {
     <div class="list-item">
       <div class="main">
         <div class="title">${o.side === "buy" ? "Acquisto" : "Vendita"} ${qty(o.quantity, o.instrument_type, o.currency)} ${esc(o.name)}</div>
-        <div class="small muted">Inserito ${dateTime(o.created_at)}${o.executed_at ? ` · eseguito ${dateTime(o.executed_at)}` : ""}${o.cancelled_at ? ` · annullato ${dateTime(o.cancelled_at)}` : ""}</div>
+        <div class="small">${orderTypeLabel(o)}${o.expires_on && o.status === "pending" ? ` · valido fino al ${date(o.expires_on)}` : ""}</div>
+        <div class="small muted">Inserito ${dateTime(o.created_at)}${o.executed_at ? ` · eseguito ${dateTime(o.executed_at)}` : ""}${o.cancelled_at && o.status === "cancelled" ? ` · annullato ${dateTime(o.cancelled_at)}` : ""}</div>
         ${o.execution ? `<div class="small">a ${instPrice(o.execution.price, o.instrument_type, o.execution.price_currency)}${Number(o.execution.accrued_interest_eur) ? ` + rateo ${money(o.execution.accrued_interest_eur)}` : ""} · netto ${money(Math.abs(Number(o.execution.cash_delta_eur)))}</div>` : ""}
         ${o.status === "pending" && o.side === "buy" ? `<div class="small muted">Liquidità prenotata ${money(o.reserved_eur)}</div>` : ""}
         ${o.note ? `<div class="small muted">${esc(o.note)}</div>` : ""}

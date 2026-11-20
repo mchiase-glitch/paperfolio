@@ -145,14 +145,25 @@ class Order(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     side: Mapped[str] = mapped_column(String(4))  # buy / sell
     position_side: Mapped[str] = mapped_column(String(5), default="long")
-    order_type: Mapped[str] = mapped_column(String(10), default="market")
+    order_type: Mapped[str] = mapped_column(String(10), default="market")  # market / limit / stop
+    trigger_price: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # limite o soglia di stop
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # ultimo giorno di validità (ora di Roma)
     quantity: Mapped[Decimal] = mapped_column(DecimalText)
-    status: Mapped[str] = mapped_column(String(10), index=True)  # pending / executed / cancelled / rejected
+    status: Mapped[str] = mapped_column(String(10), index=True)  # pending / executed / cancelled / rejected / expired
     reserved_eur: Mapped[Decimal] = mapped_column(DecimalText, default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     executed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WatchlistItem(Base):
+    """Titoli seguiti senza posizione (comuni a tutti i portafogli)."""
+
+    __tablename__ = "watchlist"
+
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), primary_key=True)
+    added_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class Price(Base):

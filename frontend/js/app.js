@@ -4,6 +4,8 @@ import { renderSearch } from "./screens/search.js";
 import { renderOrders } from "./screens/orders.js";
 import { renderFiscal } from "./screens/fiscal.js";
 import { renderSettings } from "./screens/settings.js";
+import { api } from "./api.js";
+import { esc, money } from "./format.js";
 
 const view = document.getElementById("view");
 const titleEl = document.getElementById("title");
@@ -69,8 +71,39 @@ export function toast(msg) {
   toastTimer = setTimeout(() => (el.hidden = true), 3500);
 }
 
+// --- Portafoglio selezionato (pulsante in alto a destra) ---------------------------
+const accountBtn = document.getElementById("account");
+
+export async function refreshAccount() {
+  if (!accountBtn) return;
+  try {
+    const { accounts } = await api.get("/api/accounts");
+    const cur = accounts.find((a) => a.current);
+    accountBtn.textContent = cur ? `${cur.name} ▾` : "Simulazione";
+  } catch { /* il nome resta quello precedente */ }
+}
+
+accountBtn?.addEventListener("click", async () => {
+  const { accounts } = await api.get("/api/accounts");
+  const s = openSheet(`<h3>Portafogli</h3>
+    <div class="small muted" style="margin-bottom:8px">Ogni portafoglio ha liquidità, posizioni, ordini e fiscalità separati. Tocca per passare a un altro.</div>
+    ${accounts.map((a) => `<div class="list-item clickable" data-acc="${a.id}">
+      <div class="main"><div class="title">${esc(a.name)}${a.current ? ' <span class="tag">attivo</span>' : ""}</div>
+        <div class="small muted">capitale iniziale ${money(a.initial_capital)}</div></div>
+      <div class="right num">${money(a.total_value)}</div></div>`).join("")}
+    <a class="btn block" href="#/impostazioni" style="margin-top:10px">Crea, rinomina o chiudi portafogli</a>`);
+  s.querySelectorAll("[data-acc]").forEach((row) => row.addEventListener("click", async () => {
+    await api.post(`/api/accounts/${row.dataset.acc}/select`);
+    closeSheet();
+    await refreshAccount();
+    route();
+  }));
+  s.querySelector("a").addEventListener("click", closeSheet);
+});
+
 if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
+refreshAccount();
 route();

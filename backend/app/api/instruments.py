@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..data_provider import DataProviderError, get_provider
 from ..database import get_db, utcnow
-from ..models import Instrument, TaxRule
+from ..models import Instrument, Order, TaxRule, WatchlistItem
 from ..services import bonds, corporate_events, portfolio, positions, prices
 
 router = APIRouter(prefix="/api/instruments", tags=["strumenti"])
@@ -195,6 +195,12 @@ def detail(instrument_id: int, db: Session = Depends(get_db)):
         "position": {"quantity": pos.quantity, "avg_price": pos.avg_price, "avg_cost_eur": pos.avg_cost_eur,
                      "cost_eur": pos.cost_fiscal_eur} if pos.quantity else None,
         "bond": _bond_info(db, inst, quote) if inst.type == "bond" else None,
+        "watched": db.get(WatchlistItem, inst.id) is not None,
+        "pending_orders": [{"id": o.id, "side": o.side, "quantity": o.quantity, "order_type": o.order_type,
+                            "trigger_price": o.trigger_price, "expires_on": o.expires_on}
+                           for o in db.scalars(select(Order).where(Order.account_id == account.id,
+                                                                   Order.instrument_id == inst.id,
+                                                                   Order.status == "pending"))],
     }
 
 

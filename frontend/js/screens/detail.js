@@ -1,7 +1,7 @@
 import { api } from "../api.js";
 import { closeSheet, openSheet, setTitle, toast } from "../app.js";
 import { cls, date, esc, instPrice, money, num, pct, priceTime, qty, signedMoney, toPercent, FREQ_LABELS, MARKET_LABELS, TYPE_LABELS } from "../format.js";
-import { openOrderSheet } from "./order-sheet.js";
+import { openOrderSheet, orderTypeLabel } from "./order-sheet.js";
 
 export async function renderDetail(el, id) {
   const d = await api.get(`/api/instruments/${id}`);
@@ -13,6 +13,7 @@ export async function renderDetail(el, id) {
   const factor = isBond ? 0.01 : 1;
   el.innerHTML = `
     <section class="card">
+      <button class="star ${d.watched ? "on" : ""}" id="star" style="float:right" aria-label="Segui il titolo" title="Titoli seguiti">${d.watched ? "★" : "☆"}</button>
       <div class="small muted">${esc(inst.symbol)}${inst.isin && inst.isin !== inst.symbol ? " · " + esc(inst.isin) : ""} · ${MARKET_LABELS[inst.market] || inst.market} · ${TYPE_LABELS[inst.type]}</div>
       ${q ? `
         <div class="quote-big">${instPrice(q.price, inst.type, q.currency)}${isBond ? ' <span class="small muted">corso secco</span>' : ""}</div>
@@ -46,6 +47,11 @@ export async function renderDetail(el, id) {
       <button class="btn buy" id="buy" ${q ? "" : "disabled"}>Compra</button>
       <button class="btn sell" id="sell" ${q && pos ? "" : "disabled"}>Vendi</button>
     </div>
+    ${d.pending_orders.length ? `<section class="card"><h2>Ordini in attesa</h2>
+      ${d.pending_orders.map((o) => `<div class="list-item"><div class="main">
+        <div class="title">${o.side === "buy" ? "Acquisto" : "Vendita"} ${qty(o.quantity, inst.type, inst.currency)} · ${orderTypeLabel(o, inst)}</div>
+        <div class="small muted">${o.expires_on ? `valido fino al ${date(o.expires_on)}` : "valido fino all'esecuzione"}</div></div></div>`).join("")}
+      <a class="small" href="#/ordini">Gestisci negli ordini</a></section>` : ""}
     <section class="card">
       <h2>${isBond ? "Cedole e rimborso" : `${inst.type === "etf" ? "Distribuzioni" : "Dividendi"} ed eventi societari`}</h2>
       <div id="events"><div class="empty small">Caricamento…</div></div>
@@ -72,6 +78,16 @@ export async function renderDetail(el, id) {
   el.querySelector("#buy").addEventListener("click", () => openOrderSheet(inst, "buy", pos));
   el.querySelector("#sell").addEventListener("click", () => openOrderSheet(inst, "sell", pos));
   el.querySelector("#manual")?.addEventListener("click", () => manualPrice(inst));
+  el.querySelector("#star").addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    const on = !btn.classList.contains("on");
+    try {
+      await (on ? api.post(`/api/watchlist/${inst.id}`) : api.del(`/api/watchlist/${inst.id}`));
+      btn.classList.toggle("on", on);
+      btn.textContent = on ? "★" : "☆";
+      toast(on ? "Aggiunto ai titoli seguiti" : "Tolto dai titoli seguiti");
+    } catch (e) { toast(e.message); }
+  });
 
   const chartEl = el.querySelector("#chart");
   if (chartEl) {

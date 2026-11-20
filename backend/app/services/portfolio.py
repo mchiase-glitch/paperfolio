@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import config
 from ..database import utcnow
-from ..models import Account, DailyValuation, Instrument, LedgerEntry, Order, TaxRule
+from ..models import Account, AppSetting, DailyValuation, Instrument, LedgerEntry, Order, TaxRule
 from . import bonds, corporate_events, positions, prices, settings
 from .commission import commission
 from .money import ZERO, eur
@@ -21,20 +21,40 @@ def rome_date(when: datetime) -> date:
     return when.astimezone(ROME).date()
 
 
+CURRENT_KEY = "current_account_id"
+
+
+def open_accounts(db: Session) -> list[Account]:
+    return list(db.scalars(select(Account).where(Account.closed_at.is_(None)).order_by(Account.id)))
+
+
 def active_account(db: Session) -> Account:
+    """Portafoglio selezionato nell'app (uno solo alla volta, valido per tutti i dispositivi)."""
+    row = db.get(AppSetting, CURRENT_KEY)
+    if row:
+        account = db.get(Account, int(row.value))
+        if account is not None and account.closed_at is None:
+            return account
     account = db.scalar(select(Account).where(Account.closed_at.is_(None)).order_by(Account.id.desc()))
     if account is None:
-        account = open_account(db, config.INITIAL_CAPITAL)
+        return open_account(db, config.INITIAL_CAPITAL)
+    select_account(db, account)
     return account
 
 
-def open_account(db: Session, capital: Decimal, now: datetime | None = None) -> Account:
+def select_account(db: Session, account: Account) -> None:
+    settings.set_value(db, CURRENT_KEY, str(account.id))
+    db.commit()
+
+
+def open_account(db: Session, capital: Decimal, now: datetime | None = None, name: str = "Portafoglio") -> Account:
     now = now or utcnow()
-    account = Account(name="Portafoglio", initial_capital=capital, created_at=now)
+    account = Account(name=name, initial_capital=capital, created_at=now)
     db.add(account)
     db.flush()
     db.add(LedgerEntry(account_id=account.id, ts=now, kind="deposit", cash_delta_eur=eur(capital),
                        description="Capitale iniziale"))
+    settings.set_value(db, CURRENT_KEY, str(account.id))
     db.commit()
     return account
 
@@ -100,6 +120,27 @@ def _daily_values(db: Session, account: Account) -> dict[date, Decimal]:
     return {r.day: r.positions_value_eur for r in db.scalars(q)}
 
 
+def value_history(db: Session, account: Account, now: datetime | None = None) -> list[tuple[date, Decimal]]:
+    """Valore totale a fine giornata: controvalore salvato ogni sera + liquidità ricostruita dal ledger.
+
+    Ci sono solo i giorni in cui il server era acceso; l'ultimo punto è il valore attuale.
+    """
+    now = now or utcnow()
+    today = rome_date(now)
+    values = _daily_values(db, account)
+    entries = [(rome_date(e.ts), e.cash_delta_eur) for e in positions.ledger(db, account.id)]
+    out = []
+    cash, i = ZERO, 0
+    days = set(values) | {rome_date(account.created_at)}  # il primo giorno vale il capitale iniziale
+    for day in sorted(d for d in days if d < today):
+        while i < len(entries) and entries[i][0] <= day:
+            cash += entries[i][1]
+            i += 1
+        out.append((day, eur(values.get(day, ZERO) + cash)))
+    out.append((today, summary(db, account, now)["total_value"]))
+    return out
+
+
 def _stamp_start(db: Session, account: Account, year: int) -> date:
     return max(date(year, 1, 1), rome_date(account.created_at))
 
@@ -142,17 +183,24 @@ def charge_past_years(db: Session, now: datetime | None = None) -> None:
             charge_stamp(db, account, year, end, when)
 
 
+def close_account(db: Session, account: Account, now: datetime | None = None,
+                  note: str = "Annullato per chiusura del portafoglio") -> None:
+    """Chiude un portafoglio: bollo maturato addebitato, ordini in attesa annullati. Lo storico resta."""
+    now = now or utcnow()
+    snapshot(db, account, now)
+    charge_stamp(db, account, rome_date(now).year, rome_date(now), now)
+    for o in db.scalars(select(Order).where(Order.account_id == account.id, Order.status == "pending")):
+        o.status, o.cancelled_at, o.note = "cancelled", now, note
+    account.closed_at = now
+    db.commit()
+
+
 def reset(db: Session, capital: Decimal, now: datetime | None = None) -> Account:
-    """Chiude il portafoglio (addebitando il bollo maturato) e ne apre uno nuovo. Lo storico resta."""
+    """Chiude il portafoglio selezionato e ne apre uno nuovo con lo stesso nome."""
     now = now or utcnow()
     old = active_account(db)
-    snapshot(db, old, now)
-    charge_stamp(db, old, rome_date(now).year, rome_date(now), now)
-    for o in db.scalars(select(Order).where(Order.account_id == old.id, Order.status == "pending")):
-        o.status, o.cancelled_at, o.note = "cancelled", now, "Annullato per reset del portafoglio"
-    old.closed_at = now
-    db.commit()
-    return open_account(db, capital, now)
+    close_account(db, old, now, "Annullato per reset del portafoglio")
+    return open_account(db, capital, now, old.name)
 
 
 def summary(db: Session, account: Account, now: datetime | None = None) -> dict:

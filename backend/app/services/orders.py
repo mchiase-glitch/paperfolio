@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -50,6 +50,9 @@ class OrderPreview:
     accrued_interest: Decimal = ZERO  # rateo lordo in valuta dello strumento
     interest_tax_eur: Decimal = ZERO  # imposta sul rateo (vendita) o credito d'imposta (acquisto, negativo)
     settlement_date: date | None = None
+    order_type: str = "market"
+    trigger_price: Decimal | None = None
+    condition_met: bool = True  # limite/stop: il prezzo attuale fa già scattare l'ordine
     tax_detail: object | None = field(default=None, repr=False)
 
     def public(self) -> dict:
@@ -66,10 +69,28 @@ def _commission_rule(db: Session, inst: Instrument) -> CommissionRule:
     return rule
 
 
+ORDER_TYPES = ("market", "limit", "stop")
+
+
+def condition_met(order_type: str, side: str, trigger: Decimal | None, price: Decimal) -> bool:
+    """Limite: compra a prezzo ≤ limite, vendi a prezzo ≥ limite.
+    Stop: compra quando il prezzo sale fino alla soglia, vendi quando scende fino alla soglia (stop loss)."""
+    if order_type == "market":
+        return True
+    if order_type == "limit":
+        return price <= trigger if side == "buy" else price >= trigger
+    return price >= trigger if side == "buy" else price <= trigger
+
+
 def preview(db: Session, account: Account, inst: Instrument, side: str, quantity: Decimal,
-            now: datetime | None = None) -> OrderPreview:
+            now: datetime | None = None, order_type: str = "market",
+            trigger_price: Decimal | None = None) -> OrderPreview:
     if side not in ("buy", "sell"):
         raise OrderError("Lato dell'ordine non valido")
+    if order_type not in ORDER_TYPES:
+        raise OrderError("Tipo di ordine non valido")
+    if order_type != "market" and (trigger_price is None or trigger_price <= 0):
+        raise OrderError("Indica il prezzo limite" if order_type == "limit" else "Indica il prezzo di attivazione dello stop")
     if quantity <= 0:
         raise OrderError("La quantità deve essere maggiore di zero")
     if inst.type in ("stock", "etf") and quantity != quantity.to_integral_value():
@@ -85,7 +106,18 @@ def preview(db: Session, account: Account, inst: Instrument, side: str, quantity
     if p.currency != inst.currency:
         raise OrderError(f"Valuta del prezzo ({p.currency}) diversa da quella dello strumento ({inst.currency})")
     fx_market, _ = prices.get_fx(db, inst.currency)
-    return compute(db, account, inst, side, quantity, p, fx_market, now)
+    pv = compute(db, account, inst, side, quantity, p, fx_market, now)
+    if order_type == "market":
+        return pv
+    pv.order_type, pv.trigger_price = order_type, trigger_price
+    pv.condition_met = condition_met(order_type, side, trigger_price, p.price)
+    pv.executes_now = pv.executes_now and pv.condition_met
+    if side == "buy" and not pv.executes_now:
+        # Prenotazione al prezzo peggiore prevedibile: il limite, oppure la soglia di stop se più alta
+        ref = trigger_price if order_type == "limit" else max(trigger_price, p.price)
+        worst = compute(db, account, inst, side, quantity, replace(p, price=ref), fx_market, now)
+        pv.reserved_eur = eur(worst.net_eur * (1 + settings.get_decimal(db, "reservation_margin")))
+    return pv
 
 
 def compute(db: Session, account: Account, inst: Instrument, side: str, quantity: Decimal,
@@ -174,12 +206,16 @@ def _check(db: Session, account: Account, inst: Instrument, pv: OrderPreview, am
 
 
 def place_order(db: Session, account: Account, inst: Instrument, side: str, quantity: Decimal,
-                now: datetime | None = None) -> Order:
+                now: datetime | None = None, order_type: str = "market", trigger_price: Decimal | None = None,
+                expires_on: date | None = None) -> Order:
     now = now or utcnow()
-    pv = preview(db, account, inst, side, quantity, now)
+    if expires_on is not None and expires_on < now.astimezone(ROME).date():
+        raise OrderError("La scadenza dell'ordine è già passata")
+    pv = preview(db, account, inst, side, quantity, now, order_type, trigger_price)
     _check(db, account, inst, pv, pv.net_eur if pv.executes_now else pv.reserved_eur)
     order = Order(account_id=account.id, instrument_id=inst.id, side=side, quantity=quantity,
-                  status="pending", reserved_eur=pv.reserved_eur, created_at=now)
+                  status="pending", reserved_eur=pv.reserved_eur, created_at=now, order_type=order_type,
+                  trigger_price=trigger_price if order_type != "market" else None, expires_on=expires_on)
     db.add(order)
     db.flush()
     if pv.executes_now:
@@ -235,16 +271,26 @@ def cancel_order(db: Session, order: Order, now: datetime | None = None) -> Orde
 
 
 def process_pending(db: Session, now: datetime | None = None) -> list[Order]:
-    """Esegue gli ordini in attesa al primo prezzo successivo all'apertura."""
+    """Esegue gli ordini in attesa al primo prezzo successivo all'apertura (per limite e stop:
+    al primo prezzo che fa scattare la condizione) e fa scadere quelli oltre la validità."""
     now = now or utcnow()
+    today = now.astimezone(ROME).date()
     done = []
     for order in list(db.scalars(select(Order).where(Order.status == "pending").order_by(Order.created_at))):
         inst = db.get(Instrument, order.instrument_id)
         account = db.get(Account, order.account_id)
-        if account.closed_at is not None or not market_hours.is_open(inst.exchange, now):
+        if account.closed_at is not None:
+            continue
+        if order.expires_on is not None and today > order.expires_on:
+            order.status, order.cancelled_at = "expired", now
+            order.note = f"Scaduto senza esecuzione (valido fino al {order.expires_on:%d/%m/%Y})"
+            db.commit()
+            done.append(order)
+            continue
+        if not market_hours.is_open(inst.exchange, now):
             continue
         try:
-            pv = preview(db, account, inst, order.side, order.quantity, now)
+            pv = preview(db, account, inst, order.side, order.quantity, now, order.order_type, order.trigger_price)
         except OrderError as exc:  # es. obbligazione arrivata a scadenza
             order.status, order.note = "rejected", str(exc)
             db.commit()

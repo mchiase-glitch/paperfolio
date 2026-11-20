@@ -1,5 +1,6 @@
 import csv
 import io
+from datetime import date
 from decimal import Decimal
 from typing import Literal
 
@@ -26,6 +27,9 @@ class OrderRequest(BaseModel):
     instrument_id: int
     side: Literal["buy", "sell"]
     quantity: Decimal = Field(gt=0)
+    order_type: Literal["market", "limit", "stop"] = "market"
+    trigger_price: Decimal | None = Field(default=None, gt=0)
+    expires_on: date | None = None
 
 
 def _instrument(db: Session, instrument_id: int) -> Instrument:
@@ -39,7 +43,8 @@ def _instrument(db: Session, instrument_id: int) -> Instrument:
 def preview(body: OrderRequest, db: Session = Depends(get_db)):
     account = portfolio.active_account(db)
     try:
-        pv = orders.preview(db, account, _instrument(db, body.instrument_id), body.side, body.quantity)
+        pv = orders.preview(db, account, _instrument(db, body.instrument_id), body.side, body.quantity,
+                            order_type=body.order_type, trigger_price=body.trigger_price)
     except (orders.OrderError, DataProviderError) as exc:
         raise HTTPException(400, str(exc))
     return pv.public()
@@ -49,7 +54,9 @@ def preview(body: OrderRequest, db: Session = Depends(get_db)):
 def place(body: OrderRequest, db: Session = Depends(get_db)):
     account = portfolio.active_account(db)
     try:
-        order = orders.place_order(db, account, _instrument(db, body.instrument_id), body.side, body.quantity)
+        order = orders.place_order(db, account, _instrument(db, body.instrument_id), body.side, body.quantity,
+                                   order_type=body.order_type, trigger_price=body.trigger_price,
+                                   expires_on=body.expires_on)
     except (orders.OrderError, DataProviderError) as exc:
         raise HTTPException(400, str(exc))
     if order.status == "executed":
@@ -121,6 +128,7 @@ def order_dict(db: Session, o: Order) -> dict:
     return {
         "id": o.id, "instrument_id": o.instrument_id, "symbol": inst.symbol, "name": inst.name,
         "instrument_type": inst.type, "currency": inst.currency,
+        "order_type": o.order_type, "trigger_price": o.trigger_price, "expires_on": o.expires_on,
         "side": o.side, "quantity": o.quantity, "status": o.status, "reserved_eur": o.reserved_eur,
         "created_at": o.created_at, "executed_at": o.executed_at, "cancelled_at": o.cancelled_at, "note": o.note,
         "execution": entry_dict(db, entry) if entry else None,
