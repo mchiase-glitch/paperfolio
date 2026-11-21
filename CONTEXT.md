@@ -159,9 +159,121 @@ Android Chrome → lucchetto → Impostazioni sito → Cancella e reimposta; iPh
 4. Fiscalità: redditi diversi al 26% con zainetto (categoria `derivati` già presente); scadenza delle opzioni senza valore come minusvalenza.
 5. Restano da decidere i punti aperti 2 (rimborso dell'imposta nello stesso anno) e 7 (ETF con titoli di Stato).
 
+---
+
+## Portafogli automatici – Proposta (in attesa di approvazione)
+*Documento: PROMPT_portafogli_automatici.md. Ultimo aggiornamento proposta: 21/11/2026.*
+
+### A. Verifica yfinance (campione testato)
+
+| Simbolo | Tipo | Dal | Anni | Apertura | Dividendi | Split |
+|---|---|---|---|---|---|---|
+| ENI.MI | Azione ITA | 1995-11-29 | 31 | ✅ | 56 voci | ✅ |
+| ASML.AS | Azione EUR | 1998-07-20 | 28 | ✅ | 37 voci | ✅ |
+| AAPL | Azione USA | 1980-12-12 | 46 | ✅ | 93 voci | ✅ |
+| SWDA.MI | ETF | 2009-09-25 | 17 | ✅ | n/a | n/a |
+| FTSEMIB.MI | Indice | 1997-12-31 | 29 | ✅ | n/a | n/a |
+| ^STOXX50E | Indice | 2007-03-30 | **19** | ✅ | n/a | n/a |
+| ^GSPC | Indice | 1927-12-30 | 99 | ✅ | n/a | n/a |
+
+**Prezzi di apertura**: disponibili per tutti → usabili per l'esecuzione del backtest il giorno successivo al segnale ✅
+
+**Dati di bilancio (P6 – Magic Formula)**: verificati su ENI.MI, ASML.AS, AAPL:
+- `ticker.financials` → `EBIT`, `Gross Profit`, `Operating Income` disponibili (5 anni annuali) ✅
+- `ticker.balance_sheet` → `Invested Capital`, `Total Assets` disponibili ✅
+- `ticker.info` → `enterpriseValue`, `sector` (utile per escludere banche/assicurazioni/utility) ✅
+- Nota: `info.ebit` è sempre `None`; usare `financials.loc["EBIT"]` ✅
+
+**Vincolo principale**: ^STOXX50E parte dal 2007 → il backtest di P3 e P4 che usano l'Euro Stoxx 50 parte dal 2007, non dal 2010. Per il resto, dal 2010 funziona tutto.
+
+**ETF per P3** (da verificare sullo storico in Fase A):
+- FTSE MIB: `MIBB.MI` (iShares FTSE MIB UCITS ETF)
+- Euro Stoxx 50: `MEUD.MI` (iShares Core EURO STOXX 50 UCITS ETF)
+- S&P 500: `CSPX.MI` (iShares Core S&P 500 UCITS ETF USD Acc)
+- Rifugio obbligazionario gov. EUR: `IEGA.MI` (iShares Core EUR Govt Bond UCITS ETF)
+
+### B. Schema del database – nuove tabelle (migrazione 0005_automatici)
+
+**Nuove tabelle:**
+
+| Tabella | Scopo |
+|---|---|
+| `universe_lists` | Liste di universo: id, name, source, updated_at |
+| `universe_list_items` | Titoli: id, list_id FK, symbol, name, isin; UNIQUE(list_id, symbol) |
+| `strategy_configs` | Config per portafoglio: id, name, strategy_type (P1–P7), params_json, is_paused |
+| `strategy_runs` | Esecuzioni: id, strategy_config_id FK, account_id FK, run_key UNIQUE (idempotenza), ran_at UTC, is_dry_run, status (ok/skipped/error), note |
+| `strategy_decisions` | Registro: id, run_id FK, symbol, action (buy/sell/hold/skip), reason_it (testo in italiano), signal_data_json, order_id FK (nullable) |
+| `price_history_cache` | OHLCV giornaliero per backtest: symbol, date, open/close/volume, dividend, split_ratio; UNIQUE(symbol, date) |
+| `backtest_runs` | Backtest: id, strategy_config_id FK, params_json, start_date, end_date, ran_at, status (running/done/error), result_json |
+| `backtest_entries` | Transazioni simulate: id, backtest_run_id FK, date, symbol, side, quantity, price, gross_eur, commission_eur, tax_eur, net_eur |
+
+**Modifiche alle tabelle esistenti:**
+- `accounts`: aggiungere `strategy_config_id` (INTEGER nullable FK → strategy_configs) → il conto automatico è un conto normale con un collegamento alla strategia
+- `orders`: aggiungere `trailing_distance` (DecimalText nullable) → per il nuovo tipo `trailing_stop` (aggiunto all'enum `order_type`)
+
+Tutte le migrazioni saranno solo `add_column` / `create_table`, così i trigger append-only del ledger rimangono intatti.
+
+### C. Universi – come ricavarli e aggiornarli
+
+**Fonte scelta: Wikipedia via `pandas.read_html`**
+Le pagine Wikipedia dei tre indici hanno tabelle con ISIN e ticker che `pandas` legge direttamente. I ticker vanno mappati al formato yfinance:
+- FTSE MIB: aggiungere suffisso `.MI` (es. `ENI` → `ENI.MI`)
+- Euro Stoxx 50: suffissi diversi per borsa (`.DE`, `.FR`, `.NL`, `.ES`, .MI`…) → mappatura manuale inclusa nel seed
+- S&P 100: ticker US senza suffisso
+
+**Flusso:**
+1. **Seed al primo avvio** (`seed_defaults`): file JSON `backend/data/universi/ftse_mib.json`, `eurostoxx50.json`, `sp100.json` già inclusi nel repo con la composizione attuale e i ticker yfinance già verificati. Non scritti nel codice.
+2. **Aggiornamento manuale dall'app**: schermata Universi in Impostazioni → modifica titoli, aggiunge/rimuove, salva. Mostra data dell'ultimo aggiornamento.
+3. **Aggiornamento da Wikipedia (opzionale)**: pulsante "Aggiorna da Wikipedia" che esegue lo scraping, mostra le differenze (titoli aggiunti/rimossi) e chiede conferma. Eventuali errori di rete non bloccano l'app.
+
+**Nota survivorship bias**: i titoli usciti dagli indici dopo il 2010 non sono nelle liste. Il backtest mostrerà sempre l'avviso relativo.
+
+### D. Piano fasi definitivo
+
+**A – Infrastruttura + P1 e P2 dal vivo** (prima fase di sviluppo)
+- Cache storico prezzi (`price_history_cache`), scaricamento incrementale con rispetto dei limiti yfinance
+- Universi (seed + UI di modifica + aggiornamento Wikipedia)
+- Interfaccia comune delle strategie (BaseStrategy, 6 passi: universo → segnale → rischio → dimensionamento → ordini → registro)
+- Trailing stop nel motore ordini esistente
+- Registro decisioni (`strategy_decisions`) in italiano
+- Scheduler: job aggiuntivi dopo chiusura ITA/EUR (17:45) e USA (22:15), fine mese, fine anno
+- Idempotenza: `run_key` unico, recupero all'avvio se ≤ 3 giorni di borsa
+- Interruttore "In pausa", freno drawdown, interruttore di sicurezza (>10% prezzi mancanti)
+- "Prova ora" (dry run, mostra cosa farebbe senza inviare ordini)
+- Strategie P1 (buy & hold + ribilanciamento) e P2 (trend 10 mesi Faber) dal vivo
+- Schermata "Automatici" (elenco) e "Dettaglio portafoglio automatico" (posizioni, parametri, registro)
+- Test: indicatori, P1, P2, trailing stop, idempotenza, freno drawdown, interruttore sicurezza
+
+**B – Motore backtest + metriche**
+- Database backtest separato (tabelle `backtest_runs`, `backtest_entries`)
+- Stesso motore commissioni/fiscalità/bollo del vivo, esecuzione al prezzo di apertura del giorno successivo
+- Metriche: CAGR netto, volatilità, drawdown massimo e durata, Sharpe, rotazione, % operazioni positive, costi totali
+- Schermata risultati backtest: curva vs indice, tabella operazioni, avvisi survivorship bias e overfitting
+- Backtest gira in background sul Pi, avanzamento visibile
+- Opzione train/test split
+- Backtest di P1 e P2
+- Test: backtest su dati piccoli con risultato noto, coerenza costi vivo/backtest
+
+**C – P3, P4, P5**
+- P3 (Dual momentum regionale): ETF list P3, confronto 12 mesi in EUR, rifugio
+- P4 (Momentum 12-1 con filtro trend): isteresi, filtro media 200 giorni dell'indice
+- P5 (RSI(2) Connors): RSI a 2 giorni, media 200g e 5g, stop temporale, max 5 posizioni
+- Dal vivo + backtest per P3 e P4 e P5
+- Test: segnali P3/P4/P5, quota ETF/azioni P3, isteresi P4
+
+**D – P6 e P7**
+- P6 (Magic Formula): dati bilancio da yfinance, esclusione settori, solo dal vivo, avviso in schermata
+- P7 (combinato): compensazione ordini tra sotto-strategie, ribilanciamento quote annuale, limiti sul portafoglio intero
+- Test: compensazione P7, ribilanciamento quote P7
+
+**E – Rifiniture** (dopo un periodo d'uso reale)
+
+---
+
 ## Piano delle fasi
 1. ✅ Azioni, cambio con spread, commissioni, ordini in attesa, fiscalità 26% + zainetto, bollo, Docker/deploy
 2. ✅ ETF, dividendi, split
 3. ✅ Obbligazioni (rateo, cedole, rimborso, regime 12,5%)
 4. ✅ Extra: grafico storico vs indice, watchlist, ordini limite/stop, più portafogli
 5. (Futura) Derivati in solo acquisto
+6. (Proposta, in attesa) Portafogli automatici – A: infrastruttura + P1 P2
