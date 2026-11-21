@@ -69,17 +69,21 @@ def _commission_rule(db: Session, inst: Instrument) -> CommissionRule:
     return rule
 
 
-ORDER_TYPES = ("market", "limit", "stop")
+ORDER_TYPES = ("market", "limit", "stop", "trailing_stop")
 
 
 def condition_met(order_type: str, side: str, trigger: Decimal | None, price: Decimal) -> bool:
     """Limite: compra a prezzo ≤ limite, vendi a prezzo ≥ limite.
-    Stop: compra quando il prezzo sale fino alla soglia, vendi quando scende fino alla soglia (stop loss)."""
+    Stop: compra quando il prezzo sale fino alla soglia, vendi quando scende fino alla soglia (stop loss).
+    Trailing stop: trigger_price è il livello corrente dello stop; esegue quando prezzo ≤ trigger (sell)."""
     if order_type == "market":
         return True
     if order_type == "limit":
         return price <= trigger if side == "buy" else price >= trigger
-    return price >= trigger if side == "buy" else price <= trigger
+    if order_type == "stop":
+        return price >= trigger if side == "buy" else price <= trigger
+    # trailing_stop: per le vendite scatta quando il prezzo scende fino al trigger
+    return price <= trigger if side == "sell" else price >= trigger
 
 
 def preview(db: Session, account: Account, inst: Instrument, side: str, quantity: Decimal,
@@ -270,6 +274,24 @@ def cancel_order(db: Session, order: Order, now: datetime | None = None) -> Orde
     return order
 
 
+def _update_trailing_stop(order: Order, current_price: Decimal) -> bool:
+    """
+    Aggiorna trigger_price di un trailing stop (solo sell).
+    Sposta il trigger verso l'alto se il prezzo sale.
+    Restituisce True se il trigger è stato aggiornato.
+    """
+    if order.order_type != "trailing_stop" or order.side != "sell":
+        return False
+    if order.trailing_distance is None or order.trailing_distance <= 0:
+        return False
+    # Trigger ideale = prezzo corrente × (1 - distanza%)
+    new_trigger = current_price * (1 - order.trailing_distance / 100)
+    if order.trigger_price is None or new_trigger > order.trigger_price:
+        order.trigger_price = eur(new_trigger)
+        return True
+    return False
+
+
 def process_pending(db: Session, now: datetime | None = None) -> list[Order]:
     """Esegue gli ordini in attesa al primo prezzo successivo all'apertura (per limite e stop:
     al primo prezzo che fa scattare la condizione) e fa scadere quelli oltre la validità."""
@@ -290,7 +312,9 @@ def process_pending(db: Session, now: datetime | None = None) -> list[Order]:
         if not market_hours.is_open(inst.exchange, now):
             continue
         try:
-            pv = preview(db, account, inst, order.side, order.quantity, now, order.order_type, order.trigger_price)
+            pv = preview(db, account, inst, order.side, order.quantity, now,
+                         order.order_type if order.order_type != "trailing_stop" else "stop",
+                         order.trigger_price)
         except OrderError as exc:  # es. obbligazione arrivata a scadenza
             order.status, order.note = "rejected", str(exc)
             db.commit()
@@ -298,7 +322,19 @@ def process_pending(db: Session, now: datetime | None = None) -> list[Order]:
             continue
         except Exception:
             continue  # prezzo non disponibile: si riprova al prossimo giro
+
+        # Aggiorna il trigger del trailing stop prima di verificare l'esecuzione
+        if order.order_type == "trailing_stop":
+            updated = _update_trailing_stop(order, pv.price)
+            if updated:
+                # Ricalcola con il trigger aggiornato
+                pv.trigger_price = order.trigger_price
+                pv.condition_met = condition_met("trailing_stop", order.side, order.trigger_price, pv.price)
+                pv.executes_now = pv.executes_now and pv.condition_met
+
         if not pv.executes_now:
+            if order.order_type == "trailing_stop":
+                db.commit()  # salva trigger_price aggiornato
             continue
         try:
             _check(db, account, inst, pv, pv.net_eur, exclude_order_id=order.id)

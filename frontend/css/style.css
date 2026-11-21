@@ -173,3 +173,22 @@ table.compact td { padding: 4px; border-top: 1px solid var(--line); }
 table.compact input { min-height: 38px; padding: 6px 8px; }
 .scroll-x { overflow-x: auto; }
 .refresh-line { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); margin: 0 4px 10px; }
+
+
+/* ── Portafogli automatici ─────────────────────────────────────────── */
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.badge-ok   { background: #d4f0e0; color: #0a6632; }
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+.badge-muted{ background: var(--line); color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .badge-ok { background: #0d4a26; color: #3ccf7e; }
+}
+.card-row { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; }
+.card.clickable { cursor: pointer; transition: box-shadow .15s; }
+.card.clickable:active { box-shadow: 0 0 0 2px var(--accent); }
+.btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+table.data-table { width: 100%; border-collapse: collapse; }
+table.data-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+table.data-table td { padding: 5px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+table.data-table td.mono { font-family: monospace; font-size: 12px; }
+details summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: .4rem 0; }

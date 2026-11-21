@@ -1,6 +1,9 @@
 # PaperFolio – Contesto di progetto
 
 ## Stato attuale
+**Fase A completata** (21/11/2026): portafogli automatici (P1 buy&hold, P2 Faber trend), cache prezzi storici,
+universi di titoli (FTSE MIB, Euro Stoxx 50, S&P 100), trailing stop, scheduler EU/US, 106 test superati.
+Da fare: fasi B–E (P3–P7, backtest UI, ottimizzazione parametri).
 **Fase 4 completata** (20/11/2026): più portafogli, ordini limite e stop con scadenza, titoli seguiti (watchlist),
 grafico del rendimento confrontato con un indice. 86 test automatici superati.
 **Fase 3 completata** (20/11/2026): obbligazioni a tasso fisso e zero coupon (titoli di Stato white list al 12,5%,

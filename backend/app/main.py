@@ -6,14 +6,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import config, scheduler
+from .api import auto_portfolio as auto_api
 from .api import events, fiscal, instruments, orders, portfolio, settings, watchlist
 from .api.common import DecimalJSONResponse
 from .database import SessionLocal, engine
 from .migrate import upgrade_to_head
+from .services import auto_portfolio as auto_svc
 from .services import portfolio as portfolio_svc
 from .services.settings import seed_defaults
+from .services.universes import seed_universes
 
 logging.basicConfig(level=logging.INFO)
+
+
+def _run_recovery() -> None:
+    with SessionLocal() as db:
+        auto_svc.recovery_run(db)
 
 
 @asynccontextmanager
@@ -22,12 +30,14 @@ async def lifespan(app: FastAPI):
         upgrade_to_head(conn)
     with SessionLocal() as db:
         seed_defaults(db)
+        seed_universes(db)
         portfolio_svc.active_account(db)
         portfolio_svc.charge_past_years(db)
     sched = scheduler.start() if config.ENABLE_SCHEDULER else None
     if sched:
         sched.add_job(scheduler.run_daily_snapshot, id="startup_snapshot")
         sched.add_job(scheduler.run_corporate_events, id="startup_events")
+        sched.add_job(_run_recovery, id="startup_recovery")
     yield
     if sched:
         sched.shutdown(wait=False)
@@ -36,7 +46,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PaperFolio", default_response_class=DecimalJSONResponse, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
-for module in (portfolio, instruments, orders, fiscal, settings, events, watchlist):
+for module in (portfolio, instruments, orders, fiscal, settings, events, watchlist, auto_api):
     app.include_router(module.router)
 
 

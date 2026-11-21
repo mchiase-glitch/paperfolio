@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+import sqlalchemy as sa
 from sqlalchemy import Date, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +17,7 @@ class Account(Base):
     initial_capital: Mapped[Decimal] = mapped_column(DecimalText)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    strategy_config_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FK → strategy_configs
 
 
 class Instrument(Base):
@@ -145,8 +147,9 @@ class Order(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"))
     side: Mapped[str] = mapped_column(String(4))  # buy / sell
     position_side: Mapped[str] = mapped_column(String(5), default="long")
-    order_type: Mapped[str] = mapped_column(String(10), default="market")  # market / limit / stop
+    order_type: Mapped[str] = mapped_column(String(14), default="market")  # market / limit / stop / trailing_stop
     trigger_price: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # limite o soglia di stop
+    trailing_distance: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)  # distanza trailing stop (%)
     expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # ultimo giorno di validità (ora di Roma)
     quantity: Mapped[Decimal] = mapped_column(DecimalText)
     status: Mapped[str] = mapped_column(String(10), index=True)  # pending / executed / cancelled / rejected / expired
@@ -235,3 +238,91 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(String(200))
+
+
+# ── Portafogli automatici (fase A) ───────────────────────────────────────────
+
+class UniverseList(Base):
+    """Lista di titoli ammessi per una strategia (FTSE MIB, Euro Stoxx 50, S&P 100, personalizzata)."""
+
+    __tablename__ = "universe_lists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)   # 'ftse_mib' | 'eurostoxx50' | 'sp100' | custom
+    label: Mapped[str] = mapped_column(String(100))              # etichetta leggibile
+    source: Mapped[str] = mapped_column(String(20))              # 'seed' | 'wikipedia' | 'manual'
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class UniverseListItem(Base):
+    __tablename__ = "universe_list_items"
+    __table_args__ = (UniqueConstraint("list_id", "symbol", name="uq_list_symbol"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    list_id: Mapped[int] = mapped_column(ForeignKey("universe_lists.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
+
+
+class StrategyConfig(Base):
+    """Configurazione di un portafoglio automatico (tipo di strategia + parametri)."""
+
+    __tablename__ = "strategy_configs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    strategy_type: Mapped[str] = mapped_column(String(10))   # P1 … P7
+    params_json: Mapped[str] = mapped_column(Text)            # JSON con tutti i parametri
+    is_paused: Mapped[int] = mapped_column(Integer, default=0)
+    is_drawdown_braking: Mapped[int] = mapped_column(Integer, default=0)  # freno drawdown attivo
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class StrategyRun(Base):
+    """Ogni esecuzione (o tentativo) di una strategia. run_key garantisce l'idempotenza."""
+
+    __tablename__ = "strategy_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_config_id: Mapped[int] = mapped_column(ForeignKey("strategy_configs.id"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    run_key: Mapped[str] = mapped_column(String(100), unique=True)
+    ran_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    is_dry_run: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(10))   # ok / skipped / error
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class StrategyDecision(Base):
+    """Registro di ogni decisione presa dalla strategia, con spiegazione in italiano."""
+
+    __tablename__ = "strategy_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("strategy_runs.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(40))
+    action: Mapped[str] = mapped_column(String(10))     # buy / sell / hold / skip
+    reason_it: Mapped[str] = mapped_column(Text)
+    signal_data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class PriceHistoryCache(Base):
+    """OHLCV giornaliero non rettificato (dividendi e split a parte) per il backtest e gli indicatori."""
+
+    __tablename__ = "price_history_cache"
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_price_history_symbol_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    date: Mapped[date] = mapped_column(Date)
+    open: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    high: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    low: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    close: Mapped[float] = mapped_column(sa.Float)
+    volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dividend: Mapped[float] = mapped_column(sa.Float, default=0.0)
+    split_ratio: Mapped[float] = mapped_column(sa.Float, default=1.0)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

@@ -1,0 +1,257 @@
+{
+  "name": "eurostoxx50",
+  "label": "Euro Stoxx 50",
+  "source": "wikipedia",
+  "items": [
+    {
+      "symbol": "ADS.DE",
+      "name": "Adidas",
+      "isin": ""
+    },
+    {
+      "symbol": "ADYEN.AS",
+      "name": "Adyen",
+      "isin": ""
+    },
+    {
+      "symbol": "AD.AS",
+      "name": "Ahold Delhaize",
+      "isin": ""
+    },
+    {
+      "symbol": "AI.PA",
+      "name": "Air Liquide",
+      "isin": ""
+    },
+    {
+      "symbol": "AIR.PA",
+      "name": "Airbus",
+      "isin": ""
+    },
+    {
+      "symbol": "ALV.DE",
+      "name": "Allianz",
+      "isin": ""
+    },
+    {
+      "symbol": "ABI.BR",
+      "name": "Anheuser-Busch InBev",
+      "isin": ""
+    },
+    {
+      "symbol": "ARGX.BR",
+      "name": "Argenx",
+      "isin": ""
+    },
+    {
+      "symbol": "ASML.AS",
+      "name": "ASML Holding",
+      "isin": ""
+    },
+    {
+      "symbol": "CS.PA",
+      "name": "Axa",
+      "isin": ""
+    },
+    {
+      "symbol": "BAS.DE",
+      "name": "BASF",
+      "isin": ""
+    },
+    {
+      "symbol": "BAYN.DE",
+      "name": "Bayer",
+      "isin": ""
+    },
+    {
+      "symbol": "BBVA.MC",
+      "name": "BBVA",
+      "isin": ""
+    },
+    {
+      "symbol": "SAN.MC",
+      "name": "Banco Santander",
+      "isin": ""
+    },
+    {
+      "symbol": "BMW.DE",
+      "name": "BMW",
+      "isin": ""
+    },
+    {
+      "symbol": "BNP.PA",
+      "name": "BNP Paribas",
+      "isin": ""
+    },
+    {
+      "symbol": "BN.PA",
+      "name": "Danone",
+      "isin": ""
+    },
+    {
+      "symbol": "DBK.DE",
+      "name": "Deutsche Bank",
+      "isin": ""
+    },
+    {
+      "symbol": "DB1.DE",
+      "name": "Deutsche Börse",
+      "isin": ""
+    },
+    {
+      "symbol": "DHL.DE",
+      "name": "Deutsche Post",
+      "isin": ""
+    },
+    {
+      "symbol": "DTE.DE",
+      "name": "Deutsche Telekom",
+      "isin": ""
+    },
+    {
+      "symbol": "ENEL.MI",
+      "name": "Enel",
+      "isin": ""
+    },
+    {
+      "symbol": "ENGI.PA",
+      "name": "Engie",
+      "isin": ""
+    },
+    {
+      "symbol": "ENI.MI",
+      "name": "Eni",
+      "isin": ""
+    },
+    {
+      "symbol": "EL.PA",
+      "name": "EssilorLuxottica",
+      "isin": ""
+    },
+    {
+      "symbol": "RACE.MI",
+      "name": "Ferrari",
+      "isin": ""
+    },
+    {
+      "symbol": "RMS.PA",
+      "name": "Hermès",
+      "isin": ""
+    },
+    {
+      "symbol": "IBE.MC",
+      "name": "Iberdrola",
+      "isin": ""
+    },
+    {
+      "symbol": "ITX.MC",
+      "name": "Inditex",
+      "isin": ""
+    },
+    {
+      "symbol": "IFX.DE",
+      "name": "Infineon Technologies",
+      "isin": ""
+    },
+    {
+      "symbol": "INGA.AS",
+      "name": "ING Group",
+      "isin": ""
+    },
+    {
+      "symbol": "ISP.MI",
+      "name": "Intesa Sanpaolo",
+      "isin": ""
+    },
+    {
+      "symbol": "OR.PA",
+      "name": "L'Oréal",
+      "isin": ""
+    },
+    {
+      "symbol": "MC.PA",
+      "name": "LVMH Moët Hennessy Louis Vuitton",
+      "isin": ""
+    },
+    {
+      "symbol": "MBG.DE",
+      "name": "Mercedes-Benz Group",
+      "isin": ""
+    },
+    {
+      "symbol": "MUV2.DE",
+      "name": "Munich Re",
+      "isin": ""
+    },
+    {
+      "symbol": "NOKIA.HE",
+      "name": "Nokia",
+      "isin": ""
+    },
+    {
+      "symbol": "NDA-FI.HE",
+      "name": "Nordea",
+      "isin": ""
+    },
+    {
+      "symbol": "PRX.AS",
+      "name": "Prosus",
+      "isin": ""
+    },
+    {
+      "symbol": "RHM.DE",
+      "name": "Rheinmetall",
+      "isin": ""
+    },
+    {
+      "symbol": "SAF.PA",
+      "name": "Safran",
+      "isin": ""
+    },
+    {
+      "symbol": "SGO.PA",
+      "name": "Saint-Gobain",
+      "isin": ""
+    },
+    {
+      "symbol": "SAN.PA",
+      "name": "Sanofi",
+      "isin": ""
+    },
+    {
+      "symbol": "SAP.DE",
+      "name": "SAP",
+      "isin": ""
+    },
+    {
+      "symbol": "SU.PA",
+      "name": "Schneider Electric",
+      "isin": ""
+    },
+    {
+      "symbol": "SIE.DE",
+      "name": "Siemens",
+      "isin": ""
+    },
+    {
+      "symbol": "ENR.DE",
+      "name": "Siemens Energy",
+      "isin": ""
+    },
+    {
+      "symbol": "TTE.PA",
+      "name": "TotalEnergies",
+      "isin": ""
+    },
+    {
+      "symbol": "DG.PA",
+      "name": "Vinci SA",
+      "isin": ""
+    },
+    {
+      "symbol": "UCG.MI",
+      "name": "UniCredit",
+      "isin": ""
+    }
+  ]
+}
