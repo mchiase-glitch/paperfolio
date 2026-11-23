@@ -127,12 +127,14 @@ def run_strategy(
     if cov < SAFETY_MIN_COVERAGE:
         run = _save_run(db, config, account, run_key, now, is_dry_run, "skipped",
                         f"Copertura dati {cov*100:.0f}% < {SAFETY_MIN_COVERAGE*100:.0f}%: esecuzione saltata")
+        db.commit()
         return {"config_id": config.id, "run_id": run.id, "status": "skipped"}
 
     # ── Controlla se la strategia gira oggi ─────────────────────────────────
     if not strategy.should_run_today(db, today):
         run = _save_run(db, config, account, run_key, now, is_dry_run, "skipped",
                         "Non è il giorno previsto per questa strategia")
+        db.commit()
         return {"config_id": config.id, "run_id": run.id, "status": "skipped"}
 
     # ── Passo 3b: Drawdown brake ─────────────────────────────────────────────

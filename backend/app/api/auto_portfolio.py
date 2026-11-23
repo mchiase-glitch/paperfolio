@@ -180,25 +180,34 @@ def get_auto_runs(config_id: int, limit: int = 20, db: Session = Depends(get_db)
 @router.post("/auto/{config_id}/run_now")
 def run_now_dry(config_id: int, db: Session = Depends(get_db)):
     """Prova ora (dry-run): genera le decisioni senza piazzare ordini."""
+    import traceback
+    from datetime import date
     cfg = db.get(StrategyConfig, config_id)
     if cfg is None:
         raise HTTPException(404, "Portafoglio automatico non trovato")
-    # Il dry-run usa un run_key con suffisso per non bloccare il run reale
-    from datetime import date
     today = date.today()
-    result = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=today)
+    try:
+        result = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=today)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise HTTPException(500, f"{exc}\n\n{tb}")
     return result
 
 
 @router.post("/auto/{config_id}/run_live")
 def run_now_live(config_id: int, db: Session = Depends(get_db)):
     """Esegui ora (live): genera le decisioni e piazza gli ordini reali."""
+    import traceback
+    from datetime import date
     cfg = db.get(StrategyConfig, config_id)
     if cfg is None:
         raise HTTPException(404, "Portafoglio automatico non trovato")
-    from datetime import date
     today = date.today()
-    result = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=today)
+    try:
+        result = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=today)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        raise HTTPException(500, f"{exc}\n\n{tb}")
     return result
 
 
