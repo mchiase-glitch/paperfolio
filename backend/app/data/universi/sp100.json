@@ -1,0 +1,512 @@
+{
+  "name": "sp100",
+  "label": "S&P 100",
+  "source": "wikipedia",
+  "items": [
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "ABBV",
+      "name": "AbbVie",
+      "isin": ""
+    },
+    {
+      "symbol": "ABT",
+      "name": "Abbott Laboratories",
+      "isin": ""
+    },
+    {
+      "symbol": "ACN",
+      "name": "Accenture",
+      "isin": ""
+    },
+    {
+      "symbol": "ADBE",
+      "name": "Adobe Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "AMAT",
+      "name": "Applied Materials",
+      "isin": ""
+    },
+    {
+      "symbol": "AMD",
+      "name": "Advanced Micro Devices",
+      "isin": ""
+    },
+    {
+      "symbol": "AMGN",
+      "name": "Amgen",
+      "isin": ""
+    },
+    {
+      "symbol": "AMT",
+      "name": "American Tower",
+      "isin": ""
+    },
+    {
+      "symbol": "AMZN",
+      "name": "Amazon",
+      "isin": ""
+    },
+    {
+      "symbol": "ANET",
+      "name": "Arista Networks",
+      "isin": ""
+    },
+    {
+      "symbol": "AVGO",
+      "name": "Broadcom",
+      "isin": ""
+    },
+    {
+      "symbol": "AXP",
+      "name": "American Express",
+      "isin": ""
+    },
+    {
+      "symbol": "BA",
+      "name": "Boeing",
+      "isin": ""
+    },
+    {
+      "symbol": "BAC",
+      "name": "Bank of America",
+      "isin": ""
+    },
+    {
+      "symbol": "BKNG",
+      "name": "Booking Holdings",
+      "isin": ""
+    },
+    {
+      "symbol": "BLK",
+      "name": "BlackRock",
+      "isin": ""
+    },
+    {
+      "symbol": "BMY",
+      "name": "Bristol Myers Squibb",
+      "isin": ""
+    },
+    {
+      "symbol": "BNY",
+      "name": "BNY Mellon",
+      "isin": ""
+    },
+    {
+      "symbol": "BRK.B",
+      "name": "Berkshire Hathaway (Class B)",
+      "isin": ""
+    },
+    {
+      "symbol": "C",
+      "name": "Citigroup",
+      "isin": ""
+    },
+    {
+      "symbol": "CAT",
+      "name": "Caterpillar Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "CMCSA",
+      "name": "Comcast",
+      "isin": ""
+    },
+    {
+      "symbol": "COF",
+      "name": "Capital One",
+      "isin": ""
+    },
+    {
+      "symbol": "COP",
+      "name": "ConocoPhillips",
+      "isin": ""
+    },
+    {
+      "symbol": "COST",
+      "name": "Costco",
+      "isin": ""
+    },
+    {
+      "symbol": "CRM",
+      "name": "Salesforce",
+      "isin": ""
+    },
+    {
+      "symbol": "CSCO",
+      "name": "Cisco",
+      "isin": ""
+    },
+    {
+      "symbol": "CVS",
+      "name": "CVS Health",
+      "isin": ""
+    },
+    {
+      "symbol": "CVX",
+      "name": "Chevron Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "DE",
+      "name": "Deere & Company",
+      "isin": ""
+    },
+    {
+      "symbol": "DELL",
+      "name": "Dell Technologies",
+      "isin": ""
+    },
+    {
+      "symbol": "DHR",
+      "name": "Danaher Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "DIS",
+      "name": "Walt Disney Company (The)",
+      "isin": ""
+    },
+    {
+      "symbol": "DUK",
+      "name": "Duke Energy",
+      "isin": ""
+    },
+    {
+      "symbol": "EMR",
+      "name": "Emerson Electric",
+      "isin": ""
+    },
+    {
+      "symbol": "FDX",
+      "name": "FedEx",
+      "isin": ""
+    },
+    {
+      "symbol": "GD",
+      "name": "General Dynamics",
+      "isin": ""
+    },
+    {
+      "symbol": "GE",
+      "name": "GE Aerospace",
+      "isin": ""
+    },
+    {
+      "symbol": "GEV",
+      "name": "GE Vernova",
+      "isin": ""
+    },
+    {
+      "symbol": "GILD",
+      "name": "Gilead Sciences",
+      "isin": ""
+    },
+    {
+      "symbol": "GM",
+      "name": "General Motors",
+      "isin": ""
+    },
+    {
+      "symbol": "GOOG",
+      "name": "Alphabet Inc. (Class C)",
+      "isin": ""
+    },
+    {
+      "symbol": "GOOGL",
+      "name": "Alphabet Inc. (Class A)",
+      "isin": ""
+    },
+    {
+      "symbol": "GS",
+      "name": "Goldman Sachs",
+      "isin": ""
+    },
+    {
+      "symbol": "HD",
+      "name": "Home Depot",
+      "isin": ""
+    },
+    {
+      "symbol": "IBM",
+      "name": "IBM",
+      "isin": ""
+    },
+    {
+      "symbol": "INTC",
+      "name": "Intel",
+      "isin": ""
+    },
+    {
+      "symbol": "INTU",
+      "name": "Intuit",
+      "isin": ""
+    },
+    {
+      "symbol": "ISRG",
+      "name": "Intuitive Surgical",
+      "isin": ""
+    },
+    {
+      "symbol": "JNJ",
+      "name": "Johnson & Johnson",
+      "isin": ""
+    },
+    {
+      "symbol": "JPM",
+      "name": "JPMorgan Chase",
+      "isin": ""
+    },
+    {
+      "symbol": "KO",
+      "name": "Coca-Cola Company (The)",
+      "isin": ""
+    },
+    {
+      "symbol": "LIN",
+      "name": "Linde plc",
+      "isin": ""
+    },
+    {
+      "symbol": "LLY",
+      "name": "Eli Lilly and Company",
+      "isin": ""
+    },
+    {
+      "symbol": "LMT",
+      "name": "Lockheed Martin",
+      "isin": ""
+    },
+    {
+      "symbol": "LOW",
+      "name": "Lowe's",
+      "isin": ""
+    },
+    {
+      "symbol": "LRCX",
+      "name": "Lam Research",
+      "isin": ""
+    },
+    {
+      "symbol": "MA",
+      "name": "Mastercard",
+      "isin": ""
+    },
+    {
+      "symbol": "MCD",
+      "name": "McDonald's",
+      "isin": ""
+    },
+    {
+      "symbol": "MDLZ",
+      "name": "Mondelēz International",
+      "isin": ""
+    },
+    {
+      "symbol": "MDT",
+      "name": "Medtronic",
+      "isin": ""
+    },
+    {
+      "symbol": "META",
+      "name": "Meta Platforms",
+      "isin": ""
+    },
+    {
+      "symbol": "MMM",
+      "name": "3M",
+      "isin": ""
+    },
+    {
+      "symbol": "MO",
+      "name": "Altria",
+      "isin": ""
+    },
+    {
+      "symbol": "MRK",
+      "name": "Merck & Co.",
+      "isin": ""
+    },
+    {
+      "symbol": "MS",
+      "name": "Morgan Stanley",
+      "isin": ""
+    },
+    {
+      "symbol": "MSFT",
+      "name": "Microsoft",
+      "isin": ""
+    },
+    {
+      "symbol": "MU",
+      "name": "Micron Technology",
+      "isin": ""
+    },
+    {
+      "symbol": "NEE",
+      "name": "NextEra Energy",
+      "isin": ""
+    },
+    {
+      "symbol": "NFLX",
+      "name": "Netflix, Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "NOW",
+      "name": "ServiceNow",
+      "isin": ""
+    },
+    {
+      "symbol": "NVDA",
+      "name": "Nvidia",
+      "isin": ""
+    },
+    {
+      "symbol": "ORCL",
+      "name": "Oracle Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "PANW",
+      "name": "Palo Alto Networks",
+      "isin": ""
+    },
+    {
+      "symbol": "PEP",
+      "name": "PepsiCo",
+      "isin": ""
+    },
+    {
+      "symbol": "PFE",
+      "name": "Pfizer",
+      "isin": ""
+    },
+    {
+      "symbol": "PG",
+      "name": "Procter & Gamble",
+      "isin": ""
+    },
+    {
+      "symbol": "PLTR",
+      "name": "Palantir Technologies",
+      "isin": ""
+    },
+    {
+      "symbol": "PM",
+      "name": "Philip Morris International",
+      "isin": ""
+    },
+    {
+      "symbol": "QCOM",
+      "name": "Qualcomm",
+      "isin": ""
+    },
+    {
+      "symbol": "RTX",
+      "name": "RTX Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "SBUX",
+      "name": "Starbucks",
+      "isin": ""
+    },
+    {
+      "symbol": "SCHW",
+      "name": "Charles Schwab Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "SNDK",
+      "name": "Sandisk",
+      "isin": ""
+    },
+    {
+      "symbol": "SO",
+      "name": "Southern Company",
+      "isin": ""
+    },
+    {
+      "symbol": "T",
+      "name": "AT&T",
+      "isin": ""
+    },
+    {
+      "symbol": "TMO",
+      "name": "Thermo Fisher Scientific",
+      "isin": ""
+    },
+    {
+      "symbol": "TMUS",
+      "name": "T-Mobile US",
+      "isin": ""
+    },
+    {
+      "symbol": "TSLA",
+      "name": "Tesla, Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "TXN",
+      "name": "Texas Instruments",
+      "isin": ""
+    },
+    {
+      "symbol": "UBER",
+      "name": "Uber",
+      "isin": ""
+    },
+    {
+      "symbol": "UNH",
+      "name": "UnitedHealth Group",
+      "isin": ""
+    },
+    {
+      "symbol": "UNP",
+      "name": "Union Pacific Corporation",
+      "isin": ""
+    },
+    {
+      "symbol": "UPS",
+      "name": "United Parcel Service",
+      "isin": ""
+    },
+    {
+      "symbol": "USB",
+      "name": "U.S. Bancorp",
+      "isin": ""
+    },
+    {
+      "symbol": "V",
+      "name": "Visa Inc.",
+      "isin": ""
+    },
+    {
+      "symbol": "VZ",
+      "name": "Verizon",
+      "isin": ""
+    },
+    {
+      "symbol": "WFC",
+      "name": "Wells Fargo",
+      "isin": ""
+    },
+    {
+      "symbol": "WMT",
+      "name": "Walmart",
+      "isin": ""
+    },
+    {
+      "symbol": "XOM",
+      "name": "ExxonMobil",
+      "isin": ""
+    }
+  ]
+}

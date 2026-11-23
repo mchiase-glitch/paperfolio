@@ -13,7 +13,6 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/app backend/app
 COPY backend/alembic backend/alembic
 COPY backend/alembic.ini backend/alembic.ini
-COPY backend/data backend/data
 COPY frontend frontend
 
 VOLUME /data

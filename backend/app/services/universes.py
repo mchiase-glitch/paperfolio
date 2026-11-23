@@ -21,7 +21,7 @@ from ..models import UniverseList, UniverseListItem
 
 log = logging.getLogger("paperfolio.universes")
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data" / "universi"
+DATA_DIR = Path(__file__).parent.parent / "data" / "universi"
 
 SYSTEM_LISTS = ["ftse_mib", "eurostoxx50", "sp100"]
 WIKIPEDIA_URLS = {
