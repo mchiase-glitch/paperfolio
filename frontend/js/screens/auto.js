@@ -10,10 +10,12 @@ export async function renderAuto(el) {
     try {
       configs = await api.get("/api/auto");
     } catch (e) {
+      if (!el.isConnected) return;
       el.innerHTML = `<div class="card error">${esc(e.message)}</div>`;
       return;
     }
 
+    if (!el.isConnected) return;
     el.innerHTML = `
       <section class="card">
         <div class="card-row">
