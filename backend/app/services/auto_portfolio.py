@@ -39,7 +39,7 @@ log = logging.getLogger("paperfolio.auto")
 ZERO = Decimal("0")
 
 # Soglia di copertura dati per l'interruttore di sicurezza
-SAFETY_MIN_COVERAGE = 0.90  # almeno il 90% dei simboli deve avere dati
+SAFETY_MIN_COVERAGE = 0.75  # almeno il 75% dei simboli deve avere dati
 DRAWDOWN_ACTIVATE = Decimal("-0.20")   # -20%: attiva il freno
 DRAWDOWN_RESUME = Decimal("-0.10")     # -10%: riprende gli acquisti
 

@@ -49,9 +49,8 @@ export async function renderAuto(el) {
         e.stopPropagation();
         const id = btn.dataset.pauseId;
         try {
-          const r = await api.patch(`/api/auto/${id}/pause`);
-          btn.textContent = r.is_paused ? "Riprendi" : "Pausa";
-          btn.classList.toggle("btn-muted", r.is_paused);
+          await api.patch(`/api/auto/${id}/pause`);
+          await load(); // ricarica tutta la lista per aggiornare badge e pulsante
         } catch (err) {
           alert(err.message);
         }
