@@ -192,3 +192,12 @@ table.data-table th { text-align: left; font-weight: 600; color: var(--muted); f
 table.data-table td { padding: 5px 4px; border-top: 1px solid var(--line); vertical-align: top; }
 table.data-table td.mono { font-family: monospace; font-size: 12px; }
 details summary { cursor: pointer; color: var(--accent); font-size: 13px; padding: .4rem 0; }
+
+.sheet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 40; display: flex; align-items: flex-end; }
+.sheet-overlay .sheet { position: static; width: 100%; border-radius: 18px 18px 0 0; }
+.sheet-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: .75rem; }
+.sheet-header h2 { margin: 0; font-size: 18px; }
+.btn-icon { background: none; border: none; font-size: 18px; color: var(--muted); cursor: pointer; padding: 4px 8px; }
+.sheet-body { display: flex; flex-direction: column; gap: .75rem; }
+.form-group { display: flex; flex-direction: column; gap: .3rem; }
+.form-group label { font-size: 13px; font-weight: 600; color: var(--muted); }

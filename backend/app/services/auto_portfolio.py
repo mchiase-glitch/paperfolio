@@ -249,7 +249,7 @@ def _place_order(
         # Calcola il valore target
         total = positions_svc.cash_balance(db, account.id) + _portfolio_value(db, account.id, price_map)
         target_value = total * dec.target_weight
-        pos = _positions_svc.position(db, account.id, up.instrument_id)
+        pos = positions_svc.position(db, account.id, up.instrument_id)
         current_value = (pos.quantity * up.price) if pos.quantity > ZERO else ZERO
         buy_value = target_value - current_value
         if buy_value <= ZERO:
@@ -275,7 +275,7 @@ def _place_order(
                 qty = pos.quantity
         else:
             # Vendi tutto
-            qty = holding.quantity
+            qty = pos.quantity
         side = "sell"
     else:
         return None

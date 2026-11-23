@@ -1,5 +1,5 @@
 // Cache dell'interfaccia per un'apertura rapida; i dati (/api) arrivano sempre dalla rete.
-const CACHE = "paperfolio-v5";
+const CACHE = "paperfolio-v6";
 const SHELL = [
   "./", "index.html", "manifest.json", "css/style.css", "js/app.js", "js/api.js", "js/format.js",
   "js/screens/portfolio.js", "js/screens/detail.js", "js/screens/order-sheet.js", "js/screens/search.js",

@@ -1,8 +1,11 @@
 """
-Endpoint REST per i portafogli automatici (Fase A).
+Endpoint REST per i portafogli automatici.
 
 GET  /api/auto                    – lista di tutti i portafogli automatici
+POST /api/auto                    – crea una nuova strategia + portafoglio
 GET  /api/auto/{id}               – dettaglio portafoglio automatico
+PATCH /api/auto/{id}              – modifica parametri
+DELETE /api/auto/{id}             – elimina (solo se senza ordini eseguiti)
 GET  /api/auto/{id}/runs          – ultimi run (decisioni incluse)
 POST /api/auto/{id}/run_now       – "Prova ora" (dry-run)
 POST /api/auto/{id}/run_live      – esegui ora (live)
@@ -17,16 +20,30 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..database import get_db
-from ..models import Account, StrategyConfig, StrategyDecision, StrategyRun
-from ..services import auto_portfolio, universes
+from ..database import get_db, utcnow
+from ..models import Account, LedgerEntry, StrategyConfig, StrategyDecision, StrategyRun
+from ..services import auto_portfolio, portfolio as portfolio_svc, universes
 from ..services import positions as positions_svc
 from ..services.money import eur
 
 router = APIRouter(prefix="/api", tags=["automatici"])
+
+STRATEGY_DEFAULTS: dict[str, dict] = {
+    "P1": {"rebalance_band": 0.25},
+    "P2": {"sma_months": 10},
+}
+
+
+class CreateAutoBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    strategy_type: str = Field(..., pattern=r"^P[1-9]$")
+    universe_list: str = Field(..., min_length=1)
+    initial_capital: Decimal = Field(..., gt=0)
+    params: dict = Field(default_factory=dict)
 
 
 # ── Universi ──────────────────────────────────────────────────────────────────
@@ -74,6 +91,43 @@ def list_auto_portfolios(db: Session = Depends(get_db)):
         account = db.scalar(select(Account).where(Account.strategy_config_id == cfg.id))
         result.append(_config_dict(db, cfg, account))
     return result
+
+
+@router.post("/auto", status_code=201)
+def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
+    """Crea una nuova strategia automatica con il portafoglio collegato."""
+    if body.strategy_type not in auto_portfolio.STRATEGY_CLASSES:
+        raise HTTPException(400, f"Tipo strategia '{body.strategy_type}' non supportato")
+
+    if universes.get_list(db, body.universe_list) is None:
+        raise HTTPException(400, f"Universo '{body.universe_list}' non trovato")
+
+    # Merge defaults + params utente; aggiungi sempre universe_list
+    defaults = STRATEGY_DEFAULTS.get(body.strategy_type, {})
+    merged_params = {**defaults, **body.params, "universe_list": body.universe_list}
+
+    cfg = StrategyConfig(
+        name=body.name,
+        strategy_type=body.strategy_type,
+        params_json=__import__("json").dumps(merged_params),
+        is_paused=0,
+        is_drawdown_braking=0,
+        created_at=utcnow(),
+    )
+    db.add(cfg)
+    db.flush()
+
+    account = portfolio_svc.open_account(
+        db,
+        capital=eur(body.initial_capital),
+        now=utcnow(),
+        name=body.name,
+    )
+    account.strategy_config_id = cfg.id
+    db.commit()
+    db.refresh(cfg)
+    db.refresh(account)
+    return _config_dict(db, cfg, account)
 
 
 @router.get("/auto/{config_id}")
