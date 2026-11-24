@@ -47,14 +47,15 @@ def select_account(db: Session, account: Account) -> None:
     db.commit()
 
 
-def open_account(db: Session, capital: Decimal, now: datetime | None = None, name: str = "Portafoglio") -> Account:
+def open_account(db: Session, capital: Decimal, now: datetime | None = None, name: str = "Portafoglio", set_current: bool = True) -> Account:
     now = now or utcnow()
     account = Account(name=name, initial_capital=capital, created_at=now)
     db.add(account)
     db.flush()
     db.add(LedgerEntry(account_id=account.id, ts=now, kind="deposit", cash_delta_eur=eur(capital),
                        description="Capitale iniziale"))
-    settings.set_value(db, CURRENT_KEY, str(account.id))
+    if set_current:
+        settings.set_value(db, CURRENT_KEY, str(account.id))
     db.commit()
     return account
 

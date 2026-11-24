@@ -40,7 +40,7 @@ export async function renderAutoDetail(el, configId) {
       alert(err.message);
     } finally {
       b.disabled = false;
-      b.textContent = "Prova ora";
+      b.textContent = "Prova ora (dry-run)";
     }
   });
 

@@ -124,6 +124,7 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
             capital=eur(body.initial_capital),
             now=utcnow(),
             name=body.name,
+            set_current=False,
         )
         account.strategy_config_id = cfg.id
         db.commit()
