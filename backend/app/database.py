@@ -51,13 +51,15 @@ class Base(DeclarativeBase):
 def make_engine(url: str):
     if url.startswith("sqlite:///") and ":memory:" not in url:
         Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(url, connect_args={"check_same_thread": False})
+    # Scheduler, download dei prezzi e richieste dell'app scrivono in parallelo: si aspetta invece di fallire
+    engine = create_engine(url, connect_args={"check_same_thread": False, "timeout": 60})
 
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=60000")
         cur.close()
 
     return engine

@@ -24,6 +24,8 @@ log = logging.getLogger("paperfolio.price_history")
 MAX_YEARS_HISTORY = 20
 # Pausa tra richieste yfinance per rispettare i rate limit
 FETCH_DELAY_S = 0.5
+# Giorni già in cache che si riscaricano a ogni aggiornamento
+REFRESH_DAYS = 5
 
 
 class DayRow(NamedTuple):
@@ -52,9 +54,11 @@ def fetch_history(db: Session, symbol: str, start: date | None = None) -> int:
             .where(PriceHistoryCache.symbol == symbol)
         )
         if last is not None:
-            start = last + timedelta(days=1)
+            # Si riscaricano gli ultimi giorni: la barra di oggi letta a mercato aperto va corretta
+            start = last - timedelta(days=REFRESH_DAYS)
         else:
             start = date.today() - timedelta(days=MAX_YEARS_HISTORY * 365)
+    db.commit()  # nessun blocco sul database durante il download
 
     if start > date.today():
         return 0
@@ -87,44 +91,46 @@ def fetch_history(db: Session, symbol: str, start: date | None = None) -> int:
     low_col = next((c for c in hist.columns if c.lower() == "low"), None)
     vol_col = next((c for c in hist.columns if c.lower() == "volume"), None)
 
-    added = 0
-    now = utcnow()
-    for idx, row in hist.iterrows():
-        d = idx.date()
-        close_val = float(row[close_col])
-        if close_val != close_val or close_val <= 0:   # NaN o zero
-            continue
-        split_val = float(row[split_col]) if split_col and row[split_col] != 0 else 1.0
-        if split_val == 0:
-            split_val = 1.0
-        div_val = float(row[div_col]) if div_col else 0.0
+    def _num(row, col):
+        if not col:
+            return None
+        v = float(row[col])
+        return None if v != v else v  # NaN → None
 
-        existing = db.scalar(
-            select(PriceHistoryCache)
-            .where(PriceHistoryCache.symbol == symbol, PriceHistoryCache.date == d)
+    parsed: dict[date, dict] = {}
+    for idx, row in hist.iterrows():
+        close_val = _num(row, close_col)
+        if close_val is None or close_val <= 0:
+            continue
+        split_val = _num(row, split_col) or 1.0
+        vol = _num(row, vol_col)
+        parsed[idx.date()] = dict(
+            open=_num(row, open_col), high=_num(row, high_col), low=_num(row, low_col),
+            close=close_val, volume=int(vol) if vol is not None else None,
+            dividend=_num(row, div_col) or 0.0, split_ratio=split_val,
         )
-        if existing is None:
-            db.add(PriceHistoryCache(
-                symbol=symbol, date=d,
-                open=float(row[open_col]) if open_col else None,
-                high=float(row[high_col]) if high_col else None,
-                low=float(row[low_col]) if low_col else None,
-                close=close_val,
-                volume=int(row[vol_col]) if vol_col else None,
-                dividend=div_val,
-                split_ratio=split_val,
-                fetched_at=now,
-            ))
+    if not parsed:
+        return 0
+
+    existing = {
+        r.date: r for r in db.scalars(
+            select(PriceHistoryCache).where(
+                PriceHistoryCache.symbol == symbol,
+                PriceHistoryCache.date >= min(parsed), PriceHistoryCache.date <= max(parsed),
+            )
+        )
+    }
+    now = utcnow()
+    added = 0
+    for d, values in parsed.items():
+        row = existing.get(d)
+        if row is None:
+            db.add(PriceHistoryCache(symbol=symbol, date=d, fetched_at=now, **values))
             added += 1
         else:
-            # Aggiorna split e dividendi (possono arrivare con ritardo)
-            if split_val != 1.0 and existing.split_ratio == 1.0:
-                existing.split_ratio = split_val
-                existing.fetched_at = now
-            if div_val and not existing.dividend:
-                existing.dividend = div_val
-                existing.fetched_at = now
-
+            for k, v in values.items():
+                setattr(row, k, v)
+            row.fetched_at = now
     db.commit()
     return added
 

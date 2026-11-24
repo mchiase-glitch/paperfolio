@@ -30,6 +30,7 @@ WIKIPEDIA_URLS = {
     "sp100": ("https://en.wikipedia.org/wiki/S%26P_100", 2, "Symbol", "Name", None),
 }
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PaperFolio/1.0)"}
+SYMBOL_FIXES = {"BRK.B": "BRK-B"}
 
 
 # ── Seed al primo avvio ───────────────────────────────────────────────────────
@@ -58,6 +59,10 @@ def seed_universes(db: Session) -> None:
                 name=item.get("name"),
                 isin=item.get("isin") or None,
             ))
+    # Simboli caricati in passato in un formato che yfinance non riconosce
+    for old, new in SYMBOL_FIXES.items():
+        for item in db.scalars(select(UniverseListItem).where(UniverseListItem.symbol == old)):
+            item.symbol = new
     db.commit()
 
 
@@ -150,6 +155,7 @@ def refresh_from_wikipedia(db: Session, list_name: str) -> dict:
     new_items = []
     for _, row in df.iterrows():
         sym = str(row.get(sym_col, "")).strip()
+        sym = SYMBOL_FIXES.get(sym, sym)
         name = str(row.get(name_col, "")).strip() if name_col else ""
         isin = str(row.get(isin_col, "")).strip() if isin_col else ""
         if sym and sym.lower() != "nan":

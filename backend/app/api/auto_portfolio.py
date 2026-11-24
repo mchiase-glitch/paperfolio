@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db, utcnow
-from ..models import Account, LedgerEntry, StrategyConfig, StrategyDecision, StrategyRun
+from ..models import Account, Order, StrategyConfig, StrategyDecision, StrategyRun
 from ..services import auto_portfolio, portfolio as portfolio_svc, universes
 from ..services import positions as positions_svc
 from ..services.money import eur
@@ -69,7 +69,17 @@ def get_universe_items(name: str, db: Session = Depends(get_db)):
 
 def _config_dict(db: Session, cfg: StrategyConfig, account: Account | None) -> dict:
     params = json.loads(cfg.params_json) if cfg.params_json else {}
+    universe_list = params.get("universe_list") or ""
+    symbols = universes.get_symbols(db, [universe_list])
+    pending = 0
+    if account:
+        pending = len(db.scalars(select(Order.id).where(Order.account_id == account.id,
+                                                       Order.status == "pending")).all())
     return {
+        "data_ready_pct": round(auto_portfolio.ready_pct(db, symbols) * 100),
+        "preparation": auto_portfolio.preparation_status(universe_list),
+        "positions_count": len(positions_svc.open_positions(db, account.id)) if account else 0,
+        "pending_orders": pending,
         "id": cfg.id,
         "name": cfg.name,
         "strategy_type": cfg.strategy_type,
@@ -130,6 +140,7 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(cfg)
         db.refresh(account)
+        auto_portfolio.start_preparation(body.universe_list)
         return _config_dict(db, cfg, account)
     except Exception as exc:
         db.rollback()

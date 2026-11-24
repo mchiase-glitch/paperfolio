@@ -39,20 +39,12 @@ def run_stamp_duty() -> None:
         portfolio.charge_past_years(db)
 
 
-def run_auto_strategies_eu() -> None:
-    """Chiusura mercati europei (17:45 ora di Roma)."""
+def run_auto_strategies(region: str) -> None:
+    """Poco prima della chiusura del mercato: gli ordini si eseguono subito al prezzo corrente."""
     with SessionLocal() as db:
-        results = auto_portfolio.run_all_strategies(db)
+        results = auto_portfolio.run_all_strategies(db, region=region)
         if results:
-            log.info("Strategie automatiche EU: %s", results)
-
-
-def run_auto_strategies_us() -> None:
-    """Chiusura mercati USA (22:15 ora di Roma)."""
-    with SessionLocal() as db:
-        results = auto_portfolio.run_all_strategies(db)
-        if results:
-            log.info("Strategie automatiche US: %s", results)
+            log.info("Strategie automatiche %s: %s", region, results)
 
 
 def start() -> BackgroundScheduler:
@@ -61,8 +53,9 @@ def start() -> BackgroundScheduler:
     sched.add_job(run_daily_snapshot, "cron", hour=23, minute=0, id="daily_snapshot")
     sched.add_job(run_stamp_duty, "cron", month=1, day=1, hour=0, minute=10, id="stamp_duty")
     sched.add_job(run_corporate_events, "cron", hour=7, minute=0, id="corporate_events")
-    # Strategie automatiche: dopo chiusura mercati EU e USA (ora di Roma)
-    sched.add_job(run_auto_strategies_eu, "cron", hour=17, minute=45, id="auto_eu", max_instances=1, coalesce=True)
-    sched.add_job(run_auto_strategies_us, "cron", hour=22, minute=15, id="auto_us", max_instances=1, coalesce=True)
+    # Strategie automatiche: mezz'ora prima della chiusura di Borsa Italiana/Xetra (17:30) e NYSE (22:00)
+    for region, (hour, minute) in auto_portfolio.SCHEDULE.items():
+        sched.add_job(run_auto_strategies, "cron", args=[region], day_of_week="mon-fri", hour=hour, minute=minute,
+                      id=f"auto_{region.lower()}", max_instances=1, coalesce=True)
     sched.start()
     return sched

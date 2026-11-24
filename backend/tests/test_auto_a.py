@@ -286,36 +286,135 @@ def test_trailing_stop_condition():
     assert condition_met("trailing_stop", "sell", D("90"), D("91")) is False
 
 
-# ── Idempotenza ───────────────────────────────────────────────────────────────
+# ── Esecuzione completa ───────────────────────────────────────────────────────
 
-def test_run_key_idempotency(db):
-    """Se il run_key esiste già, run_strategy restituisce 'already_done'."""
+TODAY = date(2025, 3, 12)
+
+
+@pytest.fixture
+def no_background(monkeypatch):
+    """Nei test la preparazione dati non deve avviare thread né scaricare da internet."""
+    started = []
+    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda name: started.append(name) or True)
+    monkeypatch.setattr(auto_portfolio, "fetch_many", lambda db, symbols: {})
+    return started
+
+
+def _seed_history_until(db, symbol: str, end: date, n_days: int = 260, price: float = 100.0) -> None:
+    from app.database import utcnow
+    d, added = end, 0
+    while added < n_days:
+        if d.weekday() < 5:
+            db.add(PriceHistoryCache(symbol=symbol, date=d, open=price, high=price, low=price, close=price,
+                                     volume=1000, dividend=0.0, split_ratio=1.0, fetched_at=utcnow()))
+            added += 1
+        d -= timedelta(days=1)
+    db.commit()
+
+
+def _ready_universe(db, provider, symbols=("ENI.MI", "ISP.MI")):
+    from .conftest import add_stock
+    _seed_universe(db, list(symbols))
+    for sym in symbols:
+        add_stock(db, sym)
+        _seed_history_until(db, sym, TODAY - timedelta(days=1))
+        provider.set(sym, "100", OPEN_MIL)
+
+
+def test_live_run_buys_whole_shares_and_spends_cash(db, provider, no_background):
+    from app.models import Order
+    from app.services import positions
     cfg = _make_config(db)
-    _seed_universe(db, ["AAPL"])
-    acc = _make_account(db, cfg)
-    today = date(2025, 3, 12)
+    acc = _make_account(db, cfg, cash="10000")
+    _ready_universe(db, provider)
 
-    # Primo run: idempotency + nessun prezzo in cache → 'skipped' (cov 0% < 90%)
-    r1 = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=today)
-    # Con coverage < 90% viene skippato, ma il run_key viene salvato
-    assert r1["status"] in ("skipped", "ok")
+    r = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
 
-    # Secondo run con lo stesso giorno → già presente
-    r2 = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=today)
+    assert r["status"] == "ok" and r["orders"] == 2
+    orders = db.scalars(select(Order).where(Order.account_id == acc.id)).all()
+    assert all(o.status == "executed" for o in orders)
+    assert all(o.quantity == o.quantity.to_integral_value() for o in orders)
+    assert all(o.note == "Automatico: P1 Test" for o in orders)
+    cash = positions.cash_balance(db, acc.id)
+    assert D("0") < cash < D("500")  # investito circa il 98%
+
+
+def test_live_run_happens_once_per_period(db, provider, no_background):
+    cfg = _make_config(db)
+    _make_account(db, cfg, cash="10000")
+    _ready_universe(db, provider)
+
+    assert auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)["status"] == "ok"
+    r2 = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
     assert r2["status"] == "already_done"
 
 
-# ── Drawdown brake ────────────────────────────────────────────────────────────
+def test_dry_run_places_nothing_and_does_not_block_live_run(db, provider, no_background):
+    from app.models import Order
+    cfg = _make_config(db)
+    acc = _make_account(db, cfg, cash="10000")
+    _ready_universe(db, provider)
+
+    for _ in range(2):
+        r = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=TODAY, now=OPEN_MIL)
+        assert r["status"] == "ok" and r["orders"] == 0
+    assert db.scalars(select(Order).where(Order.account_id == acc.id)).all() == []
+
+    live = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
+    assert live["status"] == "ok" and live["orders"] == 2
+
+
+def test_skipped_run_does_not_block_later_run(db, provider, no_background):
+    cfg = _make_config(db)
+    _make_account(db, cfg, cash="10000")
+    _seed_universe(db, ["ENI.MI", "ISP.MI"])
+
+    r1 = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
+    assert r1["status"] == "skipped"
+    assert no_background == ["test_univ"]  # avviato il download dei dati mancanti
+
+    _ready_universe(db, provider)
+    r2 = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
+    assert r2["status"] == "ok"
+
+
+def test_history_without_instrument_is_not_ready(db, no_background):
+    _seed_universe(db, ["ENI.MI"])
+    _seed_history_until(db, "ENI.MI", TODAY)
+    assert auto_portfolio.ready_pct(db, ["ENI.MI"]) == 0.0
+
+
+def test_p2_live_waits_for_month_end_but_dry_run_simulates(db, provider, no_background):
+    cfg = _make_config(db, name="P2 Test", stype="P2")
+    _make_account(db, cfg, cash="10000")
+    _ready_universe(db, provider)
+
+    live = auto_portfolio.run_strategy(db, cfg, is_dry_run=False, today=TODAY, now=OPEN_MIL)
+    assert live["status"] == "not_today"
+    dry = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=TODAY, now=OPEN_MIL)
+    assert dry["status"] == "ok"
+    run = db.get(StrategyRun, dry["run_id"])
+    assert "ultimo giorno di borsa del mese" in run.note
+
+
+def test_scheduler_runs_only_strategies_of_its_market(db, provider, no_background):
+    cfg = _make_config(db)
+    _make_account(db, cfg, cash="10000")
+    _ready_universe(db, provider)
+    assert auto_portfolio.run_all_strategies(db, today=TODAY, region="US") == []
+
+
+# ── Drawdown brake (sul valore complessivo: posizioni + liquidità) ────────────
 
 def test_drawdown_brake_activation(db):
-    """Il freno si attiva quando il drawdown supera il -20%."""
+    """Il freno si attiva quando il valore complessivo scende oltre il -20%."""
     from app.models import DailyValuation
     cfg = _make_config(db)
     acc = _make_account(db, cfg, cash="10000")
 
-    # Aggiungi valorizzazioni: massimo 10000, poi calo a 7900 (-21%)
+    # Liquidità 10000 + posizioni 10000 → 20000; poi posizioni a 5000 → 15000 (-25%)
     db.add(DailyValuation(account_id=acc.id, day=date(2025, 1, 2), positions_value_eur=D("10000")))
-    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 1), positions_value_eur=D("7900")))
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 1), positions_value_eur=D("5000")))
     db.commit()
 
     result = auto_portfolio._update_drawdown_brake(db, cfg, acc, currently_braking=False, today=date(2025, 3, 12))
@@ -331,7 +430,7 @@ def test_drawdown_brake_resume(db):
     acc = _make_account(db, cfg, cash="10000")
 
     db.add(DailyValuation(account_id=acc.id, day=date(2025, 1, 2), positions_value_eur=D("10000")))
-    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 1), positions_value_eur=D("9200")))  # -8%
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 1), positions_value_eur=D("9000")))  # -5%
     db.commit()
 
     result = auto_portfolio._update_drawdown_brake(db, cfg, acc, currently_braking=True, today=date(2025, 3, 12))
@@ -339,14 +438,28 @@ def test_drawdown_brake_resume(db):
     assert cfg.is_drawdown_braking == 0
 
 
+def test_selling_into_cash_is_not_a_drawdown(db):
+    """Vendere tutto e restare in liquidità non deve attivare il freno."""
+    from app.models import DailyValuation, LedgerEntry
+    cfg = _make_config(db)
+    acc = _make_account(db, cfg, cash="10000")
+
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 1, 2), positions_value_eur=D("10000")))
+    db.add(LedgerEntry(account_id=acc.id, ts=utc(2025, 3, 1, 10, 0), kind="deposit", cash_delta_eur=D("10000")))
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 1), positions_value_eur=D("0")))
+    db.commit()
+
+    assert auto_portfolio._update_drawdown_brake(db, cfg, acc, currently_braking=False,
+                                                 today=date(2025, 3, 12)) is False
+
+
 # ── Interruttore di sicurezza ─────────────────────────────────────────────────
 
-def test_safety_switch_skips_when_no_data(db):
-    """Se la copertura dati è < 90%, run_strategy salta l'esecuzione."""
+def test_safety_switch_skips_when_no_data(db, no_background):
+    """Se i dati pronti sono < 75%, run_strategy salta l'esecuzione e avvia il download."""
     cfg = _make_config(db)
     _seed_universe(db, ["AAPL", "MSFT", "GOOG"], "test_univ")
     _make_account(db, cfg)
-    # Nessun dato in price_history_cache → coverage 0%
-    today = date(2025, 3, 20)
-    r = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=today)
+    r = auto_portfolio.run_strategy(db, cfg, is_dry_run=True, today=date(2025, 3, 20))
     assert r["status"] == "skipped"
+    assert no_background == ["test_univ"]

@@ -74,9 +74,17 @@ export async function renderAuto(el) {
         }
       });
     });
+
+    pollWhilePreparing(el, configs, load);
   };
 
   await load();
+}
+
+// Ricarica la vista finché c'è un download di dati in corso
+export function pollWhilePreparing(el, configs, reload) {
+  if (!configs.some((c) => c.preparation?.running)) return;
+  setTimeout(() => { if (el.isConnected) reload(); }, 8000);
 }
 
 // ── Form "Nuova strategia" ────────────────────────────────────────────────────
@@ -200,6 +208,17 @@ async function openNewForm(onSuccess) {
 
 // ── Card portafoglio ──────────────────────────────────────────────────────────
 
+export function dataLine(cfg) {
+  const prep = cfg.preparation;
+  if (prep && prep.running) {
+    return `<p class="small muted" style="margin-top:.5rem">Preparazione dati: ${prep.done}/${prep.total} titoli scaricati…</p>`;
+  }
+  if (cfg.data_ready_pct < 75) {
+    return `<p class="small muted" style="margin-top:.5rem">Dati pronti per il ${cfg.data_ready_pct}% dei titoli (servono almeno il 75%). Premi "Prova ora" per avviare il download.</p>`;
+  }
+  return `<p class="small muted" style="margin-top:.5rem">Dati pronti (${cfg.data_ready_pct}% dei titoli). Opera nei giorni di borsa alle ${cfg.params?.universe_list === "sp100" ? "21:30" : "17:00"}.</p>`;
+}
+
 function configCard(cfg) {
   const statusLabel = cfg.is_paused
     ? '<span class="badge badge-muted">In pausa</span>'
@@ -210,6 +229,9 @@ function configCard(cfg) {
   const cashLine = cfg.cash_balance != null
     ? `<div class="kv"><span class="k">Liquidità</span><span class="v">${money(cfg.cash_balance)}</span></div>`
     : "";
+  const statusLine = `
+    <div class="kv"><span class="k">Titoli in portafoglio</span><span class="v">${cfg.positions_count}</span></div>
+    ${cfg.pending_orders ? `<div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>` : ""}`;
 
   return `
     <section class="card clickable" data-auto-id="${cfg.id}">
@@ -222,7 +244,9 @@ function configCard(cfg) {
       </div>
       <div class="grid2" style="margin-top:.5rem">
         ${cashLine}
+        ${statusLine}
       </div>
+      ${dataLine(cfg)}
       <div class="btn-row" style="margin-top:.75rem">
         <button class="btn small" data-dry-id="${cfg.id}">Prova ora</button>
         <button class="btn small btn-muted" data-pause-id="${cfg.id}">${cfg.is_paused ? "Riprendi" : "Pausa"}</button>

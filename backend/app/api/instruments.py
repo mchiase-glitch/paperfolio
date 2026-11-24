@@ -11,23 +11,10 @@ from ..data_provider import DataProviderError, get_provider
 from ..database import get_db, utcnow
 from ..models import Instrument, Order, TaxRule, WatchlistItem
 from ..services import bonds, corporate_events, portfolio, positions, prices
+from ..services import instruments as instruments_svc
+from ..services.instruments import FISCAL_BY_TYPE, unsupported_reason
 
 router = APIRouter(prefix="/api/instruments", tags=["strumenti"])
-
-FISCAL_BY_TYPE = {"stock": "azioni", "etf": "etf_armonizzati"}
-
-
-def unsupported_reason(itype: str, market: str | None) -> str | None:
-    if market is None:
-        return "borsa non supportata"
-    if itype == "etf" and market == "USA":
-        # Gli ETF USA non sono UCITS e non sono acquistabili dai risparmiatori italiani
-        return "ETF non armonizzato (USA)"
-    if itype == "bond":
-        return "le obbligazioni si inseriscono a mano"
-    if itype not in FISCAL_BY_TYPE:
-        return "disponibile nelle prossime fasi"
-    return None
 
 
 def instrument_dict(inst: Instrument) -> dict:
@@ -78,24 +65,10 @@ class AddInstrument(BaseModel):
 
 @router.post("")
 def add_instrument(body: AddInstrument, db: Session = Depends(get_db)):
-    existing = db.scalar(select(Instrument).where(Instrument.symbol == body.symbol))
-    if existing:
-        return instrument_dict(existing)
     try:
-        info = get_provider().info(body.symbol)
+        inst = instruments_svc.get_or_create(db, body.symbol, body.isin)
     except DataProviderError as exc:
         raise HTTPException(400, str(exc))
-    reason = unsupported_reason(info.type, info.market)
-    if reason:
-        raise HTTPException(400, f"Strumento non negoziabile: {reason}")
-    isin = (body.isin or info.isin or "").upper() or None
-    # Senza paese dalla fonte (tipico degli ETF) si usa il prefisso dell'ISIN: IE, LU, ...
-    country = info.country or (isin[:2] if isin else None)
-    inst = Instrument(symbol=info.symbol, isin=isin, name=info.name, type=info.type,
-                      market=info.market, exchange=info.exchange, currency=info.currency, country=country,
-                      fiscal_category=FISCAL_BY_TYPE[info.type], data_source="yfinance")
-    db.add(inst)
-    db.commit()
     return instrument_dict(inst)
 
 

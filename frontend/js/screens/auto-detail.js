@@ -4,6 +4,7 @@
  */
 import { api } from "../api.js";
 import { esc, dateTime, money } from "../format.js";
+import { dataLine, pollWhilePreparing } from "./auto.js";
 
 const ACTION_LABELS = { buy: "Acquisto", sell: "Vendita", hold: "Mantieni", skip: "Skip" };
 const ACTION_CLS = { buy: "pos", sell: "neg", hold: "muted", skip: "muted" };
@@ -12,39 +13,38 @@ export async function renderAutoDetail(el, configId) {
   const id = parseInt(configId, 10);
   el.innerHTML = '<div class="empty">Caricamento…</div>';
 
-  let cfg, runs;
-  try {
-    [cfg, runs] = await Promise.all([
-      api.get(`/api/auto/${id}`),
-      api.get(`/api/auto/${id}/runs?limit=5`),
-    ]);
-  } catch (e) {
-    el.innerHTML = `<div class="card error">${esc(e.message)}</div>`;
-    return;
-  }
-
-  el.innerHTML = headerCard(cfg) + runsSection(runs);
-
-  // Pulsante "Prova ora"
-  el.querySelector("#btn-dry")?.addEventListener("click", async (btn) => {
-    const b = el.querySelector("#btn-dry");
-    b.disabled = true;
-    b.textContent = "In corso…";
+  const load = async () => {
+    let cfg, runs;
     try {
-      await api.post(`/api/auto/${id}/run_now`);
-      // Ricarica per mostrare il nuovo run
-      const newRuns = await api.get(`/api/auto/${id}/runs?limit=5`);
-      el.querySelector("#runs-section").outerHTML = runsSection(newRuns);
-      attachRunToggles(el);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      b.disabled = false;
-      b.textContent = "Prova ora (dry-run)";
+      [cfg, runs] = await Promise.all([
+        api.get(`/api/auto/${id}`),
+        api.get(`/api/auto/${id}/runs?limit=5`),
+      ]);
+    } catch (e) {
+      if (el.isConnected) el.innerHTML = `<div class="card error">${esc(e.message)}</div>`;
+      return;
     }
-  });
+    if (!el.isConnected) return;
+    el.innerHTML = headerCard(cfg) + runsSection(runs);
 
-  attachRunToggles(el);
+    el.querySelector("#btn-dry").addEventListener("click", async () => {
+      const b = el.querySelector("#btn-dry");
+      b.disabled = true;
+      b.textContent = "In corso…";
+      try {
+        await api.post(`/api/auto/${id}/run_now`);
+        await load();
+      } catch (err) {
+        alert(err.message);
+        b.disabled = false;
+        b.textContent = "Prova ora (dry-run)";
+      }
+    });
+
+    pollWhilePreparing(el, [cfg], load);
+  };
+
+  await load();
 }
 
 function headerCard(cfg) {
@@ -68,8 +68,11 @@ function headerCard(cfg) {
       <div class="grid2" style="margin-top:.5rem">
         <div class="kv"><span class="k">Strategia</span><span class="v">${esc(cfg.strategy_type)}</span></div>
         ${cfg.cash_balance != null ? `<div class="kv"><span class="k">Liquidità</span><span class="v">${money(cfg.cash_balance)}</span></div>` : ""}
+        <div class="kv"><span class="k">Titoli in portafoglio</span><span class="v">${cfg.positions_count}</span></div>
+        <div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>
         ${paramRows}
       </div>
+      ${dataLine(cfg)}
       <div class="btn-row" style="margin-top:.75rem">
         <button class="btn small" id="btn-dry">Prova ora (dry-run)</button>
       </div>
@@ -118,8 +121,4 @@ function runCard(run) {
           </div>
         </details>` : ""}
     </section>`;
-}
-
-function attachRunToggles(el) {
-  // details apertura lazy (già nativa HTML)
 }
