@@ -215,11 +215,32 @@ def _save_run(
 
 
 def _build_universe_prices(db: Session, symbols: list[str]) -> list[UniversePrice]:
-    """Costruisce la lista dei prezzi correnti per ogni simbolo dell'universo."""
+    """
+    Costruisce la lista dei prezzi correnti per ogni simbolo dell'universo.
+    Usa l'ultima riga di PriceHistoryCache (scaricata da yfinance) come prezzo corrente.
+    Fallback: tabella Price (prezzi live da watchlist) se lo storico non è disponibile.
+    """
+    from .price_history import get_rows
+    from datetime import date, timedelta
+    today = date.today()
     result = []
     for sym in symbols:
         instr = db.scalar(select(Instrument).where(Instrument.symbol == sym))
         instr_id = instr.id if instr else None
+
+        # Cerca il prezzo più recente in PriceHistoryCache (ultimi 10 gg lavorativi)
+        rows = get_rows(db, sym, today - timedelta(days=14), today)
+        if rows:
+            result.append(UniversePrice(
+                symbol=sym,
+                instrument_id=instr_id,
+                price=Decimal(str(rows[-1].close)),
+                currency="EUR",
+                available=True,
+            ))
+            continue
+
+        # Fallback: Price live (watchlist)
         price_row = db.scalar(select(Price).where(Price.instrument_id == instr_id)) if instr_id else None
         if price_row:
             result.append(UniversePrice(
