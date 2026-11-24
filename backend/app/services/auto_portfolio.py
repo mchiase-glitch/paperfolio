@@ -118,9 +118,8 @@ def run_strategy(
     if not symbols:
         return {"config_id": config.id, "status": "skipped", "note": f"Lista universo {universe_list!r} vuota"}
 
-    # ── Aggiorna cache prezzi ────────────────────────────────────────────────
-    if not is_dry_run:
-        fetch_many(db, symbols)
+    # ── Aggiorna cache prezzi (anche in dry-run: i prezzi storici non sono un ordine) ──
+    fetch_many(db, symbols)
 
     # ── Passo 3: Interruttore di sicurezza ───────────────────────────────────
     cov = coverage_pct(db, symbols, min_days=252)
