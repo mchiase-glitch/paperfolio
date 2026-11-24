@@ -96,38 +96,44 @@ def list_auto_portfolios(db: Session = Depends(get_db)):
 @router.post("/auto", status_code=201)
 def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
     """Crea una nuova strategia automatica con il portafoglio collegato."""
+    import json as _json, traceback
     if body.strategy_type not in auto_portfolio.STRATEGY_CLASSES:
         raise HTTPException(400, f"Tipo strategia '{body.strategy_type}' non supportato")
 
     if universes.get_list(db, body.universe_list) is None:
         raise HTTPException(400, f"Universo '{body.universe_list}' non trovato")
 
-    # Merge defaults + params utente; aggiungi sempre universe_list
-    defaults = STRATEGY_DEFAULTS.get(body.strategy_type, {})
-    merged_params = {**defaults, **body.params, "universe_list": body.universe_list}
+    try:
+        # Merge defaults + params utente; aggiungi sempre universe_list
+        defaults = STRATEGY_DEFAULTS.get(body.strategy_type, {})
+        merged_params = {**defaults, **body.params, "universe_list": body.universe_list}
 
-    cfg = StrategyConfig(
-        name=body.name,
-        strategy_type=body.strategy_type,
-        params_json=__import__("json").dumps(merged_params),
-        is_paused=0,
-        is_drawdown_braking=0,
-        created_at=utcnow(),
-    )
-    db.add(cfg)
-    db.flush()
+        cfg = StrategyConfig(
+            name=body.name,
+            strategy_type=body.strategy_type,
+            params_json=_json.dumps(merged_params),
+            is_paused=0,
+            is_drawdown_braking=0,
+            created_at=utcnow(),
+        )
+        db.add(cfg)
+        db.flush()
 
-    account = portfolio_svc.open_account(
-        db,
-        capital=eur(body.initial_capital),
-        now=utcnow(),
-        name=body.name,
-    )
-    account.strategy_config_id = cfg.id
-    db.commit()
-    db.refresh(cfg)
-    db.refresh(account)
-    return _config_dict(db, cfg, account)
+        account = portfolio_svc.open_account(
+            db,
+            capital=eur(body.initial_capital),
+            now=utcnow(),
+            name=body.name,
+        )
+        account.strategy_config_id = cfg.id
+        db.commit()
+        db.refresh(cfg)
+        db.refresh(account)
+        return _config_dict(db, cfg, account)
+    except Exception as exc:
+        db.rollback()
+        tb = traceback.format_exc()
+        raise HTTPException(500, f"{exc}\n\n{tb}")
 
 
 @router.get("/auto/{config_id}")
