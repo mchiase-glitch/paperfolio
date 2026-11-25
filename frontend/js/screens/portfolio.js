@@ -75,7 +75,7 @@ async function loadHistory(box, benchmark = savedBenchmark()) {
   }));
 }
 
-function historyChart(points) {
+export function historyChart(points) {
   if (points.length < 2) {
     return '<div class="empty small">Il grafico si riempie con il passare dei giorni: ogni sera alle 23:00 viene salvato il valore del portafoglio.</div>';
   }

@@ -156,21 +156,32 @@ class DividendAmounts:
     net_eur: Decimal
 
 
+def dividend_breakdown(quantity: Decimal, gross_ccy: Decimal, currency: str, fx_market: Decimal, spread: Decimal,
+                       withholding_rate: Decimal, tax_rate: Decimal, tax_base_factor: Decimal) -> DividendAmounts:
+    """Calcolo puro (usato dal vivo e dal backtest): cambio, ritenuta estera, imposta italiana sul netto."""
+    conv = to_eur(gross_ccy, currency, fx_market, spread, "sell")
+    gross_eur = eur(conv.amount_eur)
+    withholding = eur(gross_eur * withholding_rate)
+    tax = eur((gross_eur - withholding) * tax_rate * tax_base_factor)
+    return DividendAmounts(quantity, gross_ccy, conv.market_rate, conv.spread, conv.applied_rate, gross_eur,
+                           withholding_rate, withholding, tax, gross_eur - withholding - tax)
+
+
+def withholding_rate(db: Session, inst: Instrument) -> Decimal:
+    """Ritenuta del paese emittente: solo sulle azioni estere."""
+    if inst.type == "stock" and inst.country and inst.country != "IT":
+        row = db.get(WithholdingRate, inst.country)
+        return row.rate if row else ZERO
+    return ZERO
+
+
 def dividend_amounts(db: Session, inst: Instrument, quantity: Decimal, amount: Decimal,
                      fx_market: Decimal) -> DividendAmounts:
     """Prima la ritenuta del paese emittente (solo azioni estere), poi l'aliquota italiana sul netto."""
-    gross_ccy = quantity * amount * inst.multiplier
-    conv = to_eur(gross_ccy, inst.currency, fx_market, settings.get_decimal(db, "fx_spread"), "sell")
-    gross_eur = eur(conv.amount_eur)
-    rate = ZERO
-    if inst.type == "stock" and inst.country and inst.country != "IT":
-        row = db.get(WithholdingRate, inst.country)
-        rate = row.rate if row else ZERO
-    withholding = eur(gross_eur * rate)
     rule = db.get(TaxRule, inst.fiscal_category)
-    tax = eur((gross_eur - withholding) * rule.rate * rule.base_factor)
-    return DividendAmounts(quantity, gross_ccy, conv.market_rate, conv.spread, conv.applied_rate, gross_eur,
-                           rate, withholding, tax, gross_eur - withholding - tax)
+    return dividend_breakdown(quantity, quantity * amount * inst.multiplier, inst.currency, fx_market,
+                              settings.get_decimal(db, "fx_spread"), withholding_rate(db, inst),
+                              rule.rate, rule.base_factor)
 
 
 def credit_dividend(db: Session, account: Account, inst: Instrument, ev: CorporateEvent) -> LedgerEntry | None:

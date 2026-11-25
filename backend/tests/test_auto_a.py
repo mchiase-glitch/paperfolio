@@ -28,7 +28,7 @@ from app.services import indicators
 from app.services.price_history import get_rows, get_adjusted_closes
 from app.services.strategies.p1_buy_hold import P1BuyHold
 from app.services.strategies.p2_trend import P2Trend, _is_last_trading_day_of_month
-from app.services.strategies.base import Decision, UniversePrice
+from app.services.strategies.base import Decision, StrategyContext, UniversePrice
 
 from .conftest import OPEN_MIL, utc
 
@@ -170,86 +170,99 @@ def test_last_trading_day_of_month():
 
 # ── P1 decisions ─────────────────────────────────────────────────────────────
 
-def test_p1_buy_all_on_empty_portfolio(db):
-    cfg = _make_config(db)
-    acc = _make_account(db, cfg, cash="10000")
-    params = {"universe_list": "test_univ", "rebalance_band": "0.25"}
-    strategy = P1BuyHold(cfg, params)
+class FakeContext(StrategyContext):
+    """Portafoglio di prova per le regole delle strategie: liquidità, azioni e storico in memoria."""
 
-    prices = [
-        UniversePrice("AAPL", None, D("150"), "USD", True),
-        UniversePrice("MSFT", None, D("300"), "USD", True),
-    ]
-    now = datetime(2025, 3, 12, 15, 0, tzinfo=timezone.utc)
-    decisions = strategy.generate_decisions(db, acc, prices, drawdown_braking=False, now=now)
+    def __init__(self, today, cash="10000", holdings=None, rows=None):
+        self.today = today
+        self._cash = D(cash)
+        self._holdings = {k: D(v) for k, v in (holdings or {}).items()}
+        self._rows = rows or {}
 
+    def quantity(self, symbol):
+        return self._holdings.get(symbol, D("0"))
+
+    def cash(self):
+        return self._cash
+
+    def history(self, symbol, start, end):
+        return [r for r in self._rows.get(symbol, []) if start <= r.date <= min(end, self.today)]
+
+    def history_count(self, symbol):
+        return sum(1 for r in self._rows.get(symbol, []) if r.date <= self.today)
+
+
+def _rows(n_days, start_price, drift, start_date):
+    from app.services.price_history import DayRow
+    out, d, price = [], start_date, start_price
+    while len(out) < n_days:
+        if d.weekday() < 5:
+            out.append(DayRow(d, price, price, price, price, 0, 0.0, 1.0))
+            price *= 1 + drift
+        d += timedelta(days=1)
+    return out
+
+
+P1_PARAMS = {"universe_list": "test_univ", "rebalance_band": "0.25"}
+
+
+def test_p1_buy_all_on_empty_portfolio():
+    prices = [UniversePrice("AAPL", None, D("150"), "EUR", True),
+              UniversePrice("MSFT", None, D("300"), "EUR", True)]
+    decisions = P1BuyHold(None, P1_PARAMS).generate_decisions(FakeContext(TODAY), prices, False)
     buys = [d for d in decisions if d.action == "buy"]
     assert len(buys) == 2
     assert all(d.target_weight == D("0.5") for d in buys)
 
 
-def test_p1_hold_when_in_band(db):
-    """Se i pesi sono entro la banda, nessuna azione."""
-    cfg = _make_config(db)
-    acc = _make_account(db, cfg, cash="5000")
-    params = {"universe_list": "test_univ", "rebalance_band": "0.25"}
-    strategy = P1BuyHold(cfg, params)
-    # Con solo 2 titoli a peso uguale (50%) e band 25%, il range ammesso è 37.5%–62.5%
-    # Un peso di 0% (no posizioni) è fuori banda → buy
-    prices = [UniversePrice("AAPL", None, D("100"), "USD", True)]
-    now = datetime(2025, 3, 12, 15, 0, tzinfo=timezone.utc)
-    decisions = strategy.generate_decisions(db, acc, prices, drawdown_braking=False, now=now)
-    assert any(d.action == "buy" for d in decisions)
+def test_p1_hold_inside_band_sell_above_buy_below():
+    # 10000 € totali, obiettivo 1/3 ≈ 3333 €: banda ±25% → 2500–4167 €
+    prices = [UniversePrice(s, None, D("100"), "EUR", True) for s in ("A", "B", "C")]
+    ctx = FakeContext(TODAY, cash="0", holdings={"A": "35", "B": "45", "C": "20"})
+    actions = {d.symbol: d.action for d in P1BuyHold(None, P1_PARAMS).generate_decisions(ctx, prices, False)}
+    assert actions == {"A": "hold", "B": "sell", "C": "buy"}
 
 
-def test_p1_no_buy_during_drawdown_brake(db):
-    cfg = _make_config(db)
-    acc = _make_account(db, cfg, cash="10000")
-    params = {"universe_list": "test_univ", "rebalance_band": "0.25"}
-    strategy = P1BuyHold(cfg, params)
-    prices = [UniversePrice("AAPL", None, D("100"), "USD", True)]
-    now = datetime(2025, 3, 12, 15, 0, tzinfo=timezone.utc)
-    decisions = strategy.generate_decisions(db, acc, prices, drawdown_braking=True, now=now)
+def test_p1_no_buy_during_drawdown_brake():
+    prices = [UniversePrice("AAPL", None, D("100"), "EUR", True)]
+    decisions = P1BuyHold(None, P1_PARAMS).generate_decisions(FakeContext(TODAY), prices, True)
     assert all(d.action != "buy" for d in decisions)
 
 
 # ── P2 decisions ─────────────────────────────────────────────────────────────
 
-def test_p2_buy_when_above_sma(db):
+P2_PARAMS = {"universe_list": "test_univ", "sma_months": 10, "min_history_days": 300}
+
+
+def test_p2_buy_when_above_sma():
     """Se la chiusura mensile è sopra la SMA(10), la strategia compra."""
-    cfg = _make_config(db, stype="P2")
-    acc = _make_account(db, cfg, cash="10000")
-    params = {"universe_list": "test_univ", "sma_months": 10, "min_history_days": 300}
-    strategy = P2Trend(cfg, params)
-
-    # Usa date nel passato coerenti con il now del test (2025-01-31)
-    sym = "AAPL"
-    _seed_prices(db, sym, 350, start_price=90.0, drift=0.001,
-                 start_date=date(2024, 1, 15))
-
-    prices = [UniversePrice(sym, None, D("130"), "USD", True)]
-    now = datetime(2025, 1, 31, 16, 0, tzinfo=timezone.utc)
-    decisions = strategy.generate_decisions(db, acc, prices, drawdown_braking=False, now=now)
-    buys = [d for d in decisions if d.action == "buy"]
-    assert len(buys) == 1
+    rows = {"AAPL": _rows(350, 90.0, 0.001, date(2024, 1, 15))}
+    ctx = FakeContext(rows["AAPL"][-1].date, rows=rows)
+    prices = [UniversePrice("AAPL", None, D("130"), "EUR", True)]
+    decisions = P2Trend(None, P2_PARAMS).generate_decisions(ctx, prices, False)
+    assert [d.action for d in decisions] == ["buy"]
 
 
-def test_p2_sell_when_below_sma(db):
-    """Se la chiusura mensile è sotto la SMA(10), la strategia vende."""
-    cfg = _make_config(db, stype="P2")
-    acc = _make_account(db, cfg, cash="10000")
-    params = {"universe_list": "test_univ", "sma_months": 10, "min_history_days": 300}
-    strategy = P2Trend(cfg, params)
+def test_p2_sell_when_below_sma_only_if_held():
+    """Sotto la SMA(10) vende se possiede il titolo, altrimenti resta fuori."""
+    rows = {"MSFT": _rows(350, 200.0, -0.001, date(2024, 1, 15))}
+    today = rows["MSFT"][-1].date
+    prices = [UniversePrice("MSFT", None, D("150"), "EUR", True)]
+    held = P2Trend(None, P2_PARAMS).generate_decisions(FakeContext(today, holdings={"MSFT": "10"}, rows=rows),
+                                                       prices, False)
+    assert [d.action for d in held] == ["sell"] and held[0].target_weight == 0
+    empty = P2Trend(None, P2_PARAMS).generate_decisions(FakeContext(today, rows=rows), prices, False)
+    assert [d.action for d in empty] == ["hold"]
 
-    sym = "MSFT"
-    _seed_prices(db, sym, 350, start_price=200.0, drift=-0.001,
-                 start_date=date(2024, 1, 15))
 
-    prices = [UniversePrice(sym, None, D("150"), "USD", True)]
-    now = datetime(2025, 1, 31, 16, 0, tzinfo=timezone.utc)
-    decisions = strategy.generate_decisions(db, acc, prices, drawdown_braking=False, now=now)
-    sells = [d for d in decisions if d.action == "sell"]
-    assert len(sells) == 1
+def test_p2_ignores_future_rows():
+    """Lo storico oltre il giorno simulato non deve influenzare il segnale (niente sguardo al futuro)."""
+    past = _rows(350, 90.0, 0.001, date(2024, 1, 15))
+    crash = _rows(60, 10.0, 0.0, past[-1].date + timedelta(days=1))
+    ctx = FakeContext(past[-1].date, rows={"X": past + crash})
+    decisions = P2Trend(None, P2_PARAMS).generate_decisions(ctx, [UniversePrice("X", None, D("130"), "EUR", True)],
+                                                            False)
+    assert [d.action for d in decisions] == ["buy"]
 
 
 # ── Trailing stop ─────────────────────────────────────────────────────────────

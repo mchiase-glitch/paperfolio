@@ -201,3 +201,9 @@ details summary { cursor: pointer; color: var(--accent); font-size: 13px; paddin
 .sheet-body { display: flex; flex-direction: column; gap: .75rem; }
 .form-group { display: flex; flex-direction: column; gap: .3rem; }
 .form-group label { font-size: 13px; font-weight: 600; color: var(--muted); }
+
+/* Backtest */
+.progress { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-top: 10px; }
+.progress i { display: block; height: 100%; background: var(--accent, #2f6fde); transition: width .4s; }
+table.data-table th.num, table.data-table td.num { text-align: right; white-space: nowrap; }
+.mono { font-family: monospace; font-size: 12px; margin-left: 4px; }

@@ -22,7 +22,17 @@ DEFAULT_TAX_RULES = [
     ("derivati", "Derivati", "0.26", "1", "diversi", "diversi"),
 ]
 
-DEFAULT_WITHHOLDING = {"US": "0.15"}
+# Ritenuta alla fonte trattenuta dal paese emittente prima dell'accredito (senza pratiche di rimborso).
+# Modificabili in Impostazioni.
+DEFAULT_WITHHOLDING = {
+    "US": "0.15",      # con il modulo W-8BEN
+    "FR": "0.128",     # persone fisiche non residenti
+    "DE": "0.26375",   # 25% + contributo di solidarietà
+    "ES": "0.19",
+    "NL": "0.15",
+    "BE": "0.30",
+    "FI": "0.35",
+}
 
 DEFAULT_SETTINGS = {
     "fx_spread": "0.001",

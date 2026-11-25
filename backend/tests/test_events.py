@@ -70,7 +70,7 @@ def test_acquisto_il_giorno_dello_stacco_non_da_diritto(db, account, provider):
 
 
 def test_vendita_il_giorno_dello_stacco_mantiene_il_diritto(db, account, provider):
-    inst = add_stock(db, country="NL")
+    inst = add_stock(db, country="LU")  # paese senza ritenuta predefinita: qui conta solo la data
     provider.set("ENI.MI", "10", OPEN_MIL)
     orders.place_order(db, account, inst, "buy", D("100"), now=OPEN_MIL)
     provider.set("ENI.MI", "10", utc(2025, 3, 17, 8, 1))

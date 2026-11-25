@@ -5,6 +5,7 @@
 import { api } from "../api.js";
 import { esc, dateTime, money } from "../format.js";
 import { dataLine, pollWhilePreparing, readableParams, strategyDescription, strategyTitle } from "./auto.js";
+import { backtestList, openBacktestForm } from "./backtest.js";
 
 const ACTION_LABELS = { buy: "Acquisto", sell: "Vendita", hold: "Mantieni", skip: "Skip" };
 const ACTION_CLS = { buy: "pos", sell: "neg", hold: "muted", skip: "muted" };
@@ -14,18 +15,24 @@ export async function renderAutoDetail(el, configId) {
   el.innerHTML = '<div class="empty">Caricamento…</div>';
 
   const load = async () => {
-    let cfg, runs;
+    let cfg, runs, backtests;
     try {
-      [cfg, runs] = await Promise.all([
+      [cfg, runs, backtests] = await Promise.all([
         api.get(`/api/auto/${id}`),
         api.get(`/api/auto/${id}/runs?limit=5`),
+        api.get(`/api/auto/${id}/backtests`),
       ]);
     } catch (e) {
       if (el.isConnected) el.innerHTML = `<div class="card error">${esc(e.message)}</div>`;
       return;
     }
     if (!el.isConnected) return;
-    el.innerHTML = headerCard(cfg) + runsSection(runs);
+    el.innerHTML = headerCard(cfg) + backtestList(backtests)
+      + '<h3 class="section-title">Esecuzioni</h3>' + runsSection(runs);
+
+    el.querySelector("#btn-bt").addEventListener("click", () => openBacktestForm(cfg));
+    el.querySelectorAll("[data-bt]").forEach((r) =>
+      r.addEventListener("click", () => (location.hash = `#/backtest/${r.dataset.bt}`)));
 
     el.querySelector("#btn-dry").addEventListener("click", async () => {
       const b = el.querySelector("#btn-dry");
@@ -76,6 +83,7 @@ function headerCard(cfg) {
       ${dataLine(cfg)}
       <div class="btn-row" style="margin-top:.75rem">
         <button class="btn small" id="btn-dry">Prova ora (dry-run)</button>
+        <button class="btn small" id="btn-bt">Backtest</button>
       </div>
     </section>`;
 }

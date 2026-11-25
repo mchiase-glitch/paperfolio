@@ -6,6 +6,7 @@ import { renderFiscal } from "./screens/fiscal.js";
 import { renderSettings } from "./screens/settings.js";
 import { renderAuto } from "./screens/auto.js";
 import { renderAutoDetail } from "./screens/auto-detail.js";
+import { renderBacktest } from "./screens/backtest.js";
 import { api } from "./api.js";
 import { esc, money } from "./format.js";
 
@@ -23,6 +24,7 @@ const routes = [
   { re: /^\/impostazioni$/, tab: "settings", title: "Impostazioni", render: renderSettings },
   { re: /^\/automatici$/, tab: "auto", title: "Automatici", render: renderAuto },
   { re: /^\/automatici\/(\d+)$/, tab: "auto", title: "Portafoglio automatico", render: renderAutoDetail, back: true },
+  { re: /^\/backtest\/(\d+)$/, tab: "auto", title: "Backtest", render: renderBacktest, back: true },
 ];
 
 export function setTitle(t) { titleEl.textContent = t; }

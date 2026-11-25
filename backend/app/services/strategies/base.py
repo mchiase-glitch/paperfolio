@@ -9,8 +9,10 @@ Ogni strategia implementa i 6 passi:
 5. Ordini: passati al motore esistente
 6. Registro: motivazione in italiano di ogni decisione
 
-La strategia NON scrive nel ledger direttamente: genera Decision e
-il modulo auto_portfolio si occupa di placing e registrazione.
+La strategia NON scrive nel ledger e non legge il database: vede il portafoglio e lo storico
+attraverso un `StrategyContext`. Dal vivo il contesto legge il ledger e la cache dei prezzi;
+nel backtest legge lo stato simulato e lo storico fino al giorno simulato. Così le regole
+sono le stesse nei due casi.
 """
 from __future__ import annotations
 
@@ -18,12 +20,8 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
-
-from sqlalchemy.orm import Session
-
-from ...models import Account, StrategyConfig
 
 log = logging.getLogger("paperfolio.strategies")
 
@@ -39,14 +37,12 @@ class Decision:
     target_weight: peso obiettivo (0–1) del totale del portafoglio; None per hold/skip
     reason_it: motivazione in italiano per il registro
     signal_data: dati numerici di supporto (es. prezzo, media, RSI)
-    instrument_id: id dell'Instrument nel DB; riempito da auto_portfolio prima dell'esecuzione
     """
     symbol: str
     action: str
     target_weight: Decimal | None
     reason_it: str
     signal_data: dict = field(default_factory=dict)
-    instrument_id: int | None = None
 
     def signal_data_json(self) -> str:
         return json.dumps(self.signal_data, default=str)
@@ -54,7 +50,7 @@ class Decision:
 
 @dataclass
 class UniversePrice:
-    """Prezzo di un titolo dell'universo per il calcolo degli indicatori e del sizing."""
+    """Prezzo (in EUR) di un titolo dell'universo per il calcolo dei pesi e del dimensionamento."""
     symbol: str
     instrument_id: int | None  # None se non ancora nel DB
     price: Decimal
@@ -62,11 +58,33 @@ class UniversePrice:
     available: bool  # False se il prezzo non è disponibile
 
 
+class StrategyContext(ABC):
+    """Quello che una strategia può vedere: portafoglio attuale e storico fino a `today`."""
+
+    today: date
+
+    @abstractmethod
+    def quantity(self, symbol: str) -> Decimal:
+        """Azioni possedute del titolo."""
+
+    @abstractmethod
+    def cash(self) -> Decimal:
+        """Liquidità in EUR."""
+
+    @abstractmethod
+    def history(self, symbol: str, start: date, end: date) -> list:
+        """Righe giornaliere (DayRow) tra start ed end, mai oltre `today`."""
+
+    @abstractmethod
+    def history_count(self, symbol: str) -> int:
+        """Numero di giorni di storico disponibili fino a `today`."""
+
+
 class BaseStrategy(ABC):
     """Classe base per tutte le strategie. Ogni strategia implementa i metodi astratti."""
 
-    def __init__(self, config: StrategyConfig, params: dict):
-        self.config = config
+    def __init__(self, config, params: dict):
+        self.config = config  # StrategyConfig (dal vivo) oppure None (backtest)
         self.params = params
 
     # ── Metodi da implementare ────────────────────────────────────────────────
@@ -77,17 +95,18 @@ class BaseStrategy(ABC):
         """'daily' | 'monthly' | 'annual'"""
 
     @abstractmethod
-    def should_run_today(self, db: Session, today: date) -> bool:
-        """True se la strategia deve girare oggi (es. ultimo giorno di borsa del mese per P2)."""
+    def should_run_today(self, today: date, next_day: date | None = None) -> bool:
+        """True se la strategia deve girare oggi (es. ultimo giorno di borsa del mese per P2).
+
+        `next_day` è il giorno di borsa successivo quando è noto (backtest); dal vivo si stima.
+        """
 
     @abstractmethod
     def generate_decisions(
         self,
-        db: Session,
-        account: Account,
+        ctx: StrategyContext,
         universe_prices: list[UniversePrice],
         drawdown_braking: bool,
-        now: datetime,
     ) -> list[Decision]:
         """
         Genera le decisioni (buy/sell/hold/skip) per ogni titolo dell'universo.
@@ -121,28 +140,13 @@ class BaseStrategy(ABC):
             return ZERO
         return Decimal("1") / Decimal(str(n))
 
-    def size_inv_volatility(self, symbols: list[str], db: Session, today: date) -> dict[str, Decimal]:
-        """
-        Peso inverso alla volatilità a 60 giorni.
-        Restituisce un dict {symbol: weight} normalizzato a 1.
-        Fallback: uguale se la volatilità non è disponibile.
-        """
-        from datetime import timedelta
-        from ...services import price_history, indicators
-        end = today
-        start = end - timedelta(days=120)
-        vols: dict[str, float] = {}
-        for sym in symbols:
-            rows = price_history.get_rows(db, sym, start, end)
-            if len(rows) >= 61:
-                closes = [r.close for r in rows[-61:]]
-                v = indicators.volatility_annual(closes)
-                if v and v > 0:
-                    vols[sym] = v
-        if not vols or len(vols) < len(symbols) / 2:
-            # Fallback a equal weight
-            w = self.size_equal(len(symbols))
-            return {s: w for s in symbols}
-        inv = {s: 1.0 / vols.get(s, 1.0) for s in symbols}
-        total = sum(inv.values())
-        return {s: Decimal(str(round(v / total, 6))) for s, v in inv.items()}
+
+def holdings_value(ctx: StrategyContext, prices: list[UniversePrice]) -> Decimal:
+    """Valore in EUR dei titoli posseduti, ai prezzi dell'universo."""
+    total = ZERO
+    for up in prices:
+        if up.available and up.price > ZERO:
+            q = ctx.quantity(up.symbol)
+            if q > ZERO:
+                total += q * up.price
+    return total

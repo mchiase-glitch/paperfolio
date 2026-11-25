@@ -309,6 +309,50 @@ class StrategyDecision(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+class BacktestRun(Base):
+    """Un backtest: parametri usati, stato di avanzamento e risultati. Separato dai portafogli veri."""
+
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_config_id: Mapped[int | None] = mapped_column(ForeignKey("strategy_configs.id"), nullable=True,
+                                                           index=True)
+    strategy_type: Mapped[str] = mapped_column(String(10))
+    strategy_version: Mapped[str] = mapped_column(String(20))
+    params_json: Mapped[str] = mapped_column(Text)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    split_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # inizio del periodo di verifica
+    initial_capital: Mapped[Decimal] = mapped_column(DecimalText)
+    status: Mapped[str] = mapped_column(String(10))  # queued / running / done / error
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0–100
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    results_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # metriche, curva, avvisi
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class BacktestTrade(Base):
+    """Operazione simulata di un backtest, con il motivo in italiano."""
+
+    __tablename__ = "backtest_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("backtest_runs.id"), index=True)
+    day: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(40))
+    side: Mapped[str] = mapped_column(String(10))  # buy / sell / dividend
+    quantity: Mapped[Decimal] = mapped_column(DecimalText)
+    price: Mapped[Decimal] = mapped_column(DecimalText)  # in valuta dello strumento
+    currency: Mapped[str] = mapped_column(String(3))
+    gross_eur: Mapped[Decimal] = mapped_column(DecimalText)
+    costs_eur: Mapped[Decimal] = mapped_column(DecimalText)  # commissioni + Tobin
+    tax_eur: Mapped[Decimal] = mapped_column(DecimalText)  # imposte (e ritenuta sui dividendi)
+    cash_delta_eur: Mapped[Decimal] = mapped_column(DecimalText)
+    realized_eur: Mapped[Decimal | None] = mapped_column(DecimalText, nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+
+
 class PriceHistoryCache(Base):
     """OHLCV giornaliero non rettificato (dividendi e split a parte) per il backtest e gli indicatori."""
 

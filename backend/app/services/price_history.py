@@ -163,17 +163,11 @@ def get_rows(db: Session, symbol: str, start: date, end: date) -> list[DayRow]:
 
 def get_adjusted_closes(db: Session, symbol: str, start: date, end: date) -> list[tuple[date, float]]:
     """
-    Chiusure rettificate per gli split (per rendere i prezzi storici comparabili all'ultimo).
-    Utile per calcolare rendimenti e medie mobili in modo corretto.
+    Chiusure comparabili nel tempo. Yahoo fornisce lo storico già rettificato per gli split
+    (anche con auto_adjust=False: resta escluso solo l'effetto dei dividendi), quindi
+    le chiusure in cache si usano così come sono.
     """
-    from .indicators import split_adjust
-    rows = get_rows(db, symbol, start, end)
-    if not rows:
-        return []
-    closes = [r.close for r in rows]
-    splits = [r.split_ratio for r in rows]
-    adj = split_adjust(closes, splits)
-    return [(r.date, a) for r, a in zip(rows, adj)]
+    return [(r.date, r.close) for r in get_rows(db, symbol, start, end)]
 
 
 def has_enough_history(db: Session, symbol: str, min_days: int = 252) -> bool:

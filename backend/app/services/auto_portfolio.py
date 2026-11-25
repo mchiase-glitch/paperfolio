@@ -34,14 +34,18 @@ from ..models import (
     Account, DailyValuation, Instrument, LedgerEntry, Order,
     StrategyConfig, StrategyDecision, StrategyRun,
 )
+from sqlalchemy import func
+
 from . import instruments as instruments_svc
 from . import orders as orders_svc
 from . import positions as positions_svc
 from . import prices as prices_svc
+from .auto_rules import (  # noqa: F401
+    BRAKE_WINDOW_DAYS, CASH_BUFFER, DRAWDOWN_ACTIVATE, DRAWDOWN_RESUME, brake_state, drawdown, order_quantity,
+)
 from .price_history import FETCH_DELAY_S, fetch_history, fetch_many, get_rows, has_enough_history
-from .strategies.base import BaseStrategy, Decision, UniversePrice
-from .strategies.p1_buy_hold import P1BuyHold
-from .strategies.p2_trend import P2Trend
+from .strategies import STRATEGY_CLASSES
+from .strategies.base import BaseStrategy, Decision, StrategyContext, UniversePrice
 from .universes import get_items, get_symbols
 
 log = logging.getLogger("paperfolio.auto")
@@ -52,16 +56,34 @@ ZERO = Decimal("0")
 # Soglia di copertura dati per l'interruttore di sicurezza
 SAFETY_MIN_COVERAGE = 0.75  # almeno il 75% dei simboli deve avere dati
 MIN_HISTORY_DAYS = 252
-DRAWDOWN_ACTIVATE = Decimal("-0.20")   # -20%: attiva il freno
-DRAWDOWN_RESUME = Decimal("-0.10")     # -10%: riprende gli acquisti
-# Quota del capitale investita: il resto copre commissioni e piccoli scarti di prezzo
-CASH_BUFFER = Decimal("0.98")
 
-# Mappa tipo → classe strategia
-STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
-    "P1": P1BuyHold,
-    "P2": P2Trend,
-}
+
+class LiveContext(StrategyContext):
+    """Il portafoglio vero: posizioni dal ledger, storico dalla cache."""
+
+    def __init__(self, db: Session, account: Account, today: date):
+        self.db, self.account, self.today = db, account, today
+        self._ids: dict[str, int | None] = {}
+
+    def _instrument_id(self, symbol: str) -> int | None:
+        if symbol not in self._ids:
+            self._ids[symbol] = self.db.scalar(select(Instrument.id).where(Instrument.symbol == symbol))
+        return self._ids[symbol]
+
+    def quantity(self, symbol: str) -> Decimal:
+        iid = self._instrument_id(symbol)
+        return positions_svc.position(self.db, self.account.id, iid).quantity if iid else ZERO
+
+    def cash(self) -> Decimal:
+        return positions_svc.cash_balance(self.db, self.account.id)
+
+    def history(self, symbol: str, start: date, end: date) -> list:
+        return get_rows(self.db, symbol, start, min(end, self.today))
+
+    def history_count(self, symbol: str) -> int:
+        from ..models import PriceHistoryCache
+        return self.db.scalar(select(func.count(PriceHistoryCache.id)).where(
+            PriceHistoryCache.symbol == symbol, PriceHistoryCache.date <= self.today)) or 0
 
 # Mercato di riferimento di ogni universo: decide in quale sessione gira la strategia
 REGION_BY_UNIVERSE = {"sp100": "US"}
@@ -119,7 +141,7 @@ def run_strategy(
         existing = db.scalar(select(StrategyRun).where(StrategyRun.run_key == run_key))
         if existing is not None:
             return {"config_id": config.id, "run_id": existing.id, "status": "already_done", "run_key": run_key}
-        if not strategy.should_run_today(db, today):
+        if not strategy.should_run_today(today):
             return {"config_id": config.id, "status": "not_today"}
 
     # ── Account collegato ────────────────────────────────────────────────────
@@ -151,8 +173,10 @@ def run_strategy(
         return {"config_id": config.id, "run_id": run.id, "status": "skipped", "note": note}
 
     note = None
-    if is_dry_run and not strategy.should_run_today(db, today):
-        note = "Simulazione: nell'esecuzione reale questa strategia opera solo l'ultimo giorno di borsa del mese."
+    if is_dry_run and not strategy.should_run_today(today):
+        note = ("Simulazione: nell'esecuzione reale questa strategia opera solo "
+                + ("l'ultimo giorno di borsa del mese." if strategy.frequency == "monthly"
+                   else "una volta l'anno." if strategy.frequency == "annual" else "nei giorni di borsa."))
 
     # ── Prezzi correnti dell'universo (in EUR) ───────────────────────────────
     universe_prices = _build_universe_prices(db, symbols, today)
@@ -164,7 +188,7 @@ def run_strategy(
         db, config, account, bool(config.is_drawdown_braking), today, current=total)
 
     # ── Passo 2: Segnale (delegato alla strategia) ───────────────────────────
-    decisions = strategy.generate_decisions(db, account, universe_prices, drawdown_braking, now)
+    decisions = strategy.generate_decisions(LiveContext(db, account, today), universe_prices, drawdown_braking)
 
     key = _side_key(run_key, now, "dry") if is_dry_run else run_key
     run = _save_run(db, config, account, key, now, is_dry_run, "ok", note)
@@ -368,14 +392,12 @@ def _place_order(
         return None, "c'è già un ordine in attesa su questo titolo"
 
     held = positions_svc.position(db, account.id, inst.id).quantity
-    current_value = held * up.price
-    target_weight = dec.target_weight or ZERO
+    free = held - positions_svc.pending_sell_quantity(db, account.id, inst.id)
+    qty, err = order_quantity(dec.action, dec.target_weight, held, free, up.price, total)
+    if err:
+        return None, err
     try:
         if dec.action == "buy":
-            target_value = total * target_weight * CASH_BUFFER
-            qty = _floor((target_value - current_value) / up.price)
-            if qty <= 0:
-                return None, "importo inferiore al prezzo di un'azione"
             # Riduce la quantità se la liquidità libera non basta (prenotazione a mercato chiuso, commissioni)
             pv = orders_svc.preview(db, account, inst, "buy", qty, now)
             needed = pv.net_eur if pv.executes_now else pv.reserved_eur
@@ -384,14 +406,6 @@ def _place_order(
                 qty = _floor(qty * available / needed)
                 if qty <= 0:
                     return None, "liquidità insufficiente"
-        else:
-            free = held - positions_svc.pending_sell_quantity(db, account.id, inst.id)
-            if target_weight > ZERO:
-                qty = min(_floor((current_value - total * target_weight) / up.price), free)
-            else:
-                qty = free
-            if qty <= 0:
-                return None, "nessuna azione da vendere"
         order = orders_svc.place_order(db, account, inst, dec.action, qty, now)
     except (orders_svc.OrderError, DataProviderError) as exc:
         db.rollback()
@@ -430,6 +444,7 @@ def _equity_series(
     if current is not None and today is not None:
         q = q.where(DailyValuation.day < today)
     rows = db.scalars(q.order_by(DailyValuation.day)).all()
+    since = today - timedelta(days=BRAKE_WINDOW_DAYS) if today is not None else None
     entries = db.scalars(
         select(LedgerEntry).where(LedgerEntry.account_id == account.id).order_by(LedgerEntry.ts, LedgerEntry.id)
     ).all()
@@ -438,7 +453,8 @@ def _equity_series(
         while i < len(entries) and entries[i].ts.astimezone(ROME).date() <= r.day:
             cash += entries[i].cash_delta_eur
             i += 1
-        series.append(r.positions_value_eur + cash)
+        if since is None or r.day > since:
+            series.append(r.positions_value_eur + cash)
     if current is not None:
         series.append(current)
     return series
@@ -453,21 +469,11 @@ def _update_drawdown_brake(
     Attiva il freno a -20%, lo disattiva a -10%.
     """
     series = _equity_series(db, account, today, current)
-    if not series:
-        return currently_braking
-    max_val = max(series)
-    if max_val <= ZERO:
-        return currently_braking
-    dd = (series[-1] - max_val) / max_val  # negativo
-
-    if not currently_braking and dd <= DRAWDOWN_ACTIVATE:
-        log.warning("Strategia %s: drawdown brake ATTIVATO (dd=%.1f%%)", config.name, float(dd) * 100)
-        config.is_drawdown_braking = 1
+    braking = brake_state(series, currently_braking)
+    if braking != currently_braking:
+        dd = float(drawdown(series) or 0) * 100
+        log.warning("Strategia %s: freno drawdown %s (dd=%.1f%%)", config.name,
+                    "ATTIVATO" if braking else "DISATTIVATO", dd)
+        config.is_drawdown_braking = 1 if braking else 0
         db.flush()
-        return True
-    if currently_braking and dd >= DRAWDOWN_RESUME:
-        log.info("Strategia %s: drawdown brake DISATTIVATO (dd=%.1f%%)", config.name, float(dd) * 100)
-        config.is_drawdown_braking = 0
-        db.flush()
-        return False
-    return currently_braking
+    return braking

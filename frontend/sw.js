@@ -1,10 +1,10 @@
 // Cache dell'interfaccia per un'apertura rapida; i dati (/api) arrivano sempre dalla rete.
-const CACHE = "paperfolio-v8";
+const CACHE = "paperfolio-v9";
 const SHELL = [
   "./", "index.html", "manifest.json", "css/style.css", "js/app.js", "js/api.js", "js/format.js",
   "js/screens/portfolio.js", "js/screens/detail.js", "js/screens/order-sheet.js", "js/screens/search.js",
   "js/screens/orders.js", "js/screens/fiscal.js", "js/screens/settings.js",
-  "js/screens/auto.js", "js/screens/auto-detail.js", "icons/icon-192.png",
+  "js/screens/auto.js", "js/screens/auto-detail.js", "js/screens/backtest.js", "icons/icon-192.png",
 ];
 
 self.addEventListener("install", (e) => {
