@@ -9,7 +9,8 @@ Ogni giorno di borsa, sui titoli delle tre liste:
 - al massimo 5 posizioni insieme, ciascuna da 1/5 del capitale; se i candidati sono di più,
   si scelgono quelli con l'RSI più basso.
 
-Parametri: max_positions (5), rsi_entry (10), max_days (10), sma_long (200), sma_exit (5).
+Parametri: max_positions (5), rsi_entry (10), max_days (10), sma_long (200), sma_exit (5),
+exit_below_sma_long (sì: vende se la chiusura scende sotto la media lunga), drawdown_brake (sì).
 """
 from __future__ import annotations
 
@@ -55,6 +56,7 @@ class P5Rsi2(BaseStrategy):
         max_days = int(self._param("max_days", 10))
         n_long = int(self._param("sma_long", 200))
         n_exit = int(self._param("sma_exit", 5))
+        exit_long = bool(self._param("exit_below_sma_long", True))  # uscita se perde la media lunga
         weight = ONE / Decimal(max_pos)
 
         decisions: list[Decision] = []
@@ -83,7 +85,7 @@ class P5Rsi2(BaseStrategy):
                 data["days"] = days
                 if close > sma_exit:
                     reason = f"Chiusura {close:.2f} sopra la media a {n_exit} giorni ({sma_exit:.2f}): rimbalzo avvenuto"
-                elif close < sma_long:
+                elif exit_long and close < sma_long:
                     reason = f"Chiusura {close:.2f} sotto la media a {n_long} giorni ({sma_long:.2f}): tendenza persa"
                 elif days >= max_days:
                     reason = f"Tenuto {days} giorni di borsa senza rimbalzo: stop temporale"

@@ -257,3 +257,13 @@ def test_p5_drawdown_brake_blocks_entries():
     ctx = Ctx({"A.MI": dip()}, TODAY)
     dec = P5Rsi2(None, {}).generate_decisions(ctx, [up("A.MI", 1)], True)
     assert [d.action for d in dec] == ["hold"]
+
+
+def test_p5_exit_below_long_average_can_be_disabled():
+    falling = path(N, 100, -0.002)
+    falling[-3:] = [falling[-4] * 0.97, falling[-4] * 0.94, falling[-4] * 0.91]
+    ctx = Ctx({"A.MI": falling}, TODAY, holdings={"A.MI": "10"}, entries={"A.MI": weekdays(N)[-3]})
+    (dec,) = P5Rsi2(None, {}).generate_decisions(ctx, [up("A.MI", 1)], False)
+    assert dec.action == "sell" and "tendenza persa" in dec.reason_it
+    (dec,) = P5Rsi2(None, {"exit_below_sma_long": False}).generate_decisions(ctx, [up("A.MI", 1)], False)
+    assert dec.action == "hold"  # resta in attesa del rimbalzo o dello stop a 10 giorni

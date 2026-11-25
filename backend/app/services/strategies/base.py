@@ -147,6 +147,11 @@ class BaseStrategy(ABC):
     needs_fundamentals = False  # usa i dati di bilancio (da scaricare prima)
     backtest_unavailable: str | None = None  # motivo per cui il backtest non ha senso
 
+    @property
+    def uses_drawdown_brake(self) -> bool:
+        """Parametro `drawdown_brake` (predefinito sì): se falso la strategia compra anche col freno acceso."""
+        return bool(self.params.get("drawdown_brake", True))
+
     def load_state(self, state_json: str | None) -> None:
         """Stato tra un'esecuzione e l'altra (solo le strategie che ne hanno bisogno, es. P7)."""
 

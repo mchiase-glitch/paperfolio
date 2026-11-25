@@ -182,6 +182,51 @@ def test_drawdown_brake_blocks_buys_in_backtest():
     assert dict(s.seen)[d[3]] is True  # 98 × 7 + 20 = 706 su un massimo di 1000: -29%
 
 
+def test_drawdown_brake_can_be_disabled_per_strategy():
+    d = days(6)
+    data = {"A": series([10, 10, 7, 7, 7, 7]), "B": series([10] * 6)}
+
+    class BuyB(Scripted):
+        def generate_decisions(self, ctx, ups, braking):
+            self.seen = getattr(self, "seen", []) + [(ctx.today, braking)]
+            return super().generate_decisions(ctx, ups, braking)
+
+    s = BuyB({d[0]: [("A", "buy", "1")], d[3]: [("B", "buy", "0.5")]})
+    s.params = {"drawdown_brake": False}
+    res = engine(s, data).run()
+    assert dict(s.seen)[d[3]] is False and res.days_braking == 0
+
+
+def test_execution_at_signal_close_with_slippage():
+    d = days(4)
+    plan = {d[0]: [("A", "buy", "0.5")], d[2]: [("A", "sell", "0")]}
+    data = {"A": series([10, 12, 14, 14], opens=[10, 11, 13, 14])}
+    e = engine(Scripted(plan), data)
+    e.options = bt.EngineOptions(execution="close", slippage=D("0.01"))
+    res = e.run()
+    buy, sell = [t for t in res.trades if t.side in ("buy", "sell")]
+    assert (buy.day, buy.price, buy.qty) == (d[0], D("10.10"), 49)  # stesso giorno, chiusura 10 + 1%
+    assert (sell.day, sell.price) == (d[2], D("13.86"))  # chiusura 14 − 1%
+
+
+def test_engine_options_from_params():
+    o = bt.EngineOptions.from_params({"backtest_options": {"execution": "close", "slippage": 0.0005, "costs": "low"}})
+    assert (o.execution, o.slippage, o.costs) == ("close", D("0.0005"), "low")
+    assert bt.EngineOptions.from_params({}) == bt.EngineOptions()
+    with pytest.raises(ValueError):
+        bt.EngineOptions.from_params({"backtest_options": {"execution": "domani"}})
+
+
+def test_low_cost_scenario():
+    c = bt.apply_cost_scenario(costs(comm=CommRule(D("2"), D("0.001"), D("5")), tobin="0.001", spread="0.005"), "low")
+    plan = {MON: [("A", "buy", "1")]}
+    res = engine(Scripted(plan), {"A": series([10, 10, 10])}, capital="10000", c=c).run()
+    (buy,) = [t for t in res.trades if t.side == "buy"]
+    gross = buy.qty * 10
+    assert c.fx_spread == 0 and c.tobin_rate == D("0.001")
+    assert buy.costs_eur == max(gross * D("0.00025"), D("1")).quantize(D("0.01")) + gross * D("0.001")
+
+
 def test_drawdown_brake_releases_after_a_year_in_cash():
     """Venduto tutto dopo il crollo, il freno non resta acceso per sempre: il massimo è quello degli ultimi 12 mesi."""
     d = days(400)

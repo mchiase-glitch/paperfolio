@@ -262,7 +262,8 @@ def run_strategy(
     # ── Passo 2: Segnale (delegato alla strategia) ───────────────────────────
     ctx = LiveContext(db, account, today)
     ctx.force_all = is_dry_run  # P7: la simulazione mostra cosa farebbero tutte le quote
-    decisions = strategy.generate_decisions(ctx, universe_prices, drawdown_braking)
+    decisions = strategy.generate_decisions(ctx, universe_prices,
+                                            drawdown_braking and strategy.uses_drawdown_brake)
 
     key = _side_key(run_key, now, "dry") if is_dry_run else run_key
     run = _save_run(db, config, account, key, now, is_dry_run, "ok", note)

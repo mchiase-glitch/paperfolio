@@ -101,6 +101,44 @@ class Costs:
     stamp_rate: Decimal
 
 
+@dataclass
+class EngineOptions:
+    """Opzioni del solo backtest (da `params["backtest_options"]`), per confrontare varianti di esecuzione e costi.
+
+    execution: "next_open" (predefinito: segnale alla chiusura, ordine all'apertura del giorno dopo)
+               oppure "close" (ordine eseguito alla chiusura stessa del segnale, come un ordine al prezzo di chiusura)
+    slippage:  peggioramento del prezzo per lato (es. 0,0005 = 0,05%): acquisti più cari, vendite più basse
+    costs:     "current" (regole di commissione e spread di cambio salvate) oppure "low" (vedi LOW_COSTS)
+    """
+    execution: str = "next_open"
+    slippage: Decimal = ZERO
+    costs: str = "current"
+
+    @classmethod
+    def from_params(cls, params: dict) -> "EngineOptions":
+        o = params.get("backtest_options") or {}
+        execution = o.get("execution", "next_open")
+        costs = o.get("costs", "current")
+        if execution not in ("next_open", "close"):
+            raise ValueError(f"Esecuzione sconosciuta: {execution}")
+        if costs not in ("current", "low"):
+            raise ValueError(f"Scenario di costo sconosciuto: {costs}")
+        return cls(execution, Decimal(str(o.get("slippage", 0))), costs)
+
+
+# Scenario "broker a basso costo": 0,025% per lato senza parte fissa, minimo 1 €, conto multivaluta
+# (nessuno spread di cambio sulle singole operazioni né sui dividendi). Tobin tax e imposte invariate.
+LOW_COSTS = CommRule(fixed=Decimal("0"), pct=Decimal("0.00025"), minimum=Decimal("1"))
+
+
+def apply_cost_scenario(costs: Costs, scenario: str) -> Costs:
+    if scenario == "current":
+        return costs
+    return Costs(commissions={k: LOW_COSTS for k in costs.commissions}, tax_rules=costs.tax_rules,
+                 withholding=costs.withholding, tobin_rate=costs.tobin_rate, fx_spread=ZERO,
+                 stamp_rate=costs.stamp_rate)
+
+
 class Series:
     """Storico giornaliero di un simbolo, in ordine di data, con ricerca binaria."""
 
@@ -229,8 +267,9 @@ class BacktestEngine:
     def __init__(self, strategy: BaseStrategy, symbols: list[str], instruments: dict[str, InstrumentInfo],
                  series: dict[str, Series], fx: dict[str, Series], costs: Costs, start: date, end: date,
                  capital: Decimal, progress: Callable[[int], None] | None = None,
-                 groups: dict[str, tuple[str, ...]] | None = None):
+                 groups: dict[str, tuple[str, ...]] | None = None, options: EngineOptions | None = None):
         self.strategy = strategy
+        self.options = options or EngineOptions()
         self.symbols = symbols  # negoziabili; `series` contiene anche indici e cambi letti dai segnali
         self.groups = groups or {}
         self.instruments = instruments
@@ -332,11 +371,12 @@ class BacktestEngine:
             while window[0][0] <= d - timedelta(days=BRAKE_WINDOW_DAYS):
                 window.popleft()
             braking = brake_state([window[0][1], equity], braking)
-            days_braking += braking
+            active = braking and self.strategy.uses_drawdown_brake  # il freno conta solo se la strategia lo usa
+            days_braking += active
 
             next_day = cal[i + 1] if i + 1 < len(cal) else None
             if next_day is not None and self.strategy.should_run_today(d, next_day):
-                self._signal(d, braking, next_day)
+                self._signal(d, active, next_day)
 
             pct = int((i + 1) * 100 / len(cal))
             if self.progress and pct != last_pct:
@@ -368,13 +408,38 @@ class BacktestEngine:
         prices = {up.symbol: up.price for up in ups if up.available}
         total = self.cash + sum((h.qty * prices[s] for s, h in self.holdings.items() if s in prices), ZERO)
         waiting = {o.symbol for o in self.pending}
+        new: list[PendingOrder] = []
         for dec in decisions:
             if dec.action not in ("buy", "sell") or dec.symbol not in prices or dec.symbol in waiting:
                 continue
             held = self.holdings.get(dec.symbol, Holding()).qty
             qty, err = order_quantity(dec.action, dec.target_weight, held, held, prices[dec.symbol], total)
             if not err:
-                self.pending.append(PendingOrder(dec.symbol, dec.action, qty, dec.reason_it, d))
+                new.append(PendingOrder(dec.symbol, dec.action, qty, dec.reason_it, d))
+        if self.options.execution == "close":
+            new = self._execute_at_close(d, new)
+        self.pending.extend(new)
+
+    def _execute_at_close(self, d: date, orders: list[PendingOrder]) -> list[PendingOrder]:
+        """Esegue subito alla chiusura del giorno del segnale (prima le vendite). Se il titolo quel giorno non
+        ha quotato, l'ordine resta in attesa e passa all'apertura successiva come nel caso normale."""
+        later = []
+        for side in ("sell", "buy"):
+            for order in [o for o in orders if o.side == side]:
+                row = self.series[order.symbol].row_on(d)
+                if row is None:
+                    later.append(order)
+                elif side == "sell":
+                    self._sell(d, order, Decimal(str(row.close)), at_open=False)
+                else:
+                    self._buy(d, order, Decimal(str(row.close)), at_open=False)
+        return later
+
+    def _slipped(self, side: str, price: Decimal) -> Decimal:
+        s = self.options.slippage
+        if not s:
+            return price
+        return price * (1 + s) if side == "buy" else price * (1 - s)
 
     def _execute_pending(self, d: date) -> None:
         if not self.pending:
@@ -405,9 +470,10 @@ class BacktestEngine:
         tobin = tobin_tax(info.type, info.country, side, gross, self.costs.tobin_rate)
         return gross, comm, tobin
 
-    def _buy(self, d: date, order: PendingOrder, price: Decimal) -> None:
+    def _buy(self, d: date, order: PendingOrder, price: Decimal, at_open: bool = True) -> None:
         info = self.instruments[order.symbol]
-        fx = self.fx_rate(info.currency, d, at_open=True)
+        fx = self.fx_rate(info.currency, d, at_open=at_open)
+        price = self._slipped("buy", price)
         if not fx:
             self.totals.dropped_orders += 1
             return
@@ -454,10 +520,11 @@ class BacktestEngine:
         detail = compute_sale_tax(realized_fiscal, self.costs.tax_rules[info.fiscal_category], lots, d)
         return gross, comm, detail, realized_gross, fraction
 
-    def _sell(self, d: date, order: PendingOrder, price: Decimal) -> None:
+    def _sell(self, d: date, order: PendingOrder, price: Decimal, at_open: bool = True) -> None:
         info = self.instruments[order.symbol]
         h = self.holdings.get(order.symbol)
-        fx = self.fx_rate(info.currency, d, at_open=True)
+        fx = self.fx_rate(info.currency, d, at_open=at_open)
+        price = self._slipped("sell", price)
         qty = min(order.qty, h.qty) if h else ZERO
         if qty <= 0 or not fx:
             self.totals.dropped_orders += 1
@@ -729,8 +796,10 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
             run.progress = min(pct, 99)
             db.commit()
 
-    engine = BacktestEngine(strategy, symbols, instruments, series, fx, load_costs(db),
-                            run.start_date, run.end_date, run.initial_capital, progress, ss.groups)
+    options = EngineOptions.from_params(params)
+    engine = BacktestEngine(strategy, symbols, instruments, series, fx,
+                            apply_cost_scenario(load_costs(db), options.costs),
+                            run.start_date, run.end_date, run.initial_capital, progress, ss.groups, options)
     res = engine.run()
     cal = [d for d, _ in res.curve]
     bench = blended_benchmark([(series.get(sym), fx.get(ccy) if ccy != "EUR" else None) for sym, ccy in bench_specs],

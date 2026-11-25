@@ -144,7 +144,7 @@ class P7Combined(BaseStrategy):
             own = [up for up in universe_prices
                    if lists & set(up.groups) or up.symbol in extra or up.symbol in book["qty"]] \
                 if lists or extra else list(universe_prices)
-            for dec in strategy.generate_decisions(sctx, own, drawdown_braking):
+            for dec in strategy.generate_decisions(sctx, own, drawdown_braking and strategy.uses_drawdown_brake):
                 if dec.action not in ("buy", "sell") or dec.symbol not in prices:
                     notes.append(Decision(dec.symbol, dec.action, None, f"[{name}] {dec.reason_it}", dec.signal_data))
                     continue
