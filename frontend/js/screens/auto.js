@@ -122,7 +122,7 @@ async function openNewForm(onSuccess) {
           <p class="small muted" id="strategy-desc" style="margin:.3rem 0 0"></p>
         </div>
         <div class="form-group" id="universe-box">
-          <label>Lista universo</label>
+          <label id="universe-label">Lista universo</label>
           <select name="universe_list">
             ${universiOptions || '<option value="">Nessun universo disponibile</option>'}
           </select>
@@ -163,6 +163,23 @@ async function openNewForm(onSuccess) {
             <input type="number" name="keep_rank" min="3" max="60" step="1" value="20">
           </div>
         </div>
+        <div id="params-p6" style="display:none">
+          <div class="form-group">
+            <label>Titoli in portafoglio</label>
+            <input type="number" name="p6_n_hold" min="5" max="40" step="1" value="15">
+          </div>
+          <div class="form-group">
+            <label>Mese della revisione annuale</label>
+            <select name="rebalance_month">${MONTHS.map((m, i) => `<option value="${i + 1}" ${i === 3 ? "selected" : ""}>${m}</option>`).join("")}</select>
+          </div>
+        </div>
+        <div id="params-p7" style="display:none">
+          <div class="form-group">
+            <label>Strategie da combinare (quote uguali)</label>
+            ${["P1", "P2", "P3", "P4", "P5", "P6"].map((t) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;color:inherit">
+              <input type="checkbox" name="sleeve" value="${t}" ${["P2", "P4", "P5"].includes(t) ? "checked" : ""}> ${esc(STRATEGY_TITLES[t])}</label>`).join("")}
+          </div>
+        </div>
         <div id="params-p5" style="display:none">
           <div class="form-group">
             <label>Posizioni al massimo</label>
@@ -191,9 +208,10 @@ async function openNewForm(onSuccess) {
       const box = sheet.querySelector(`#params-${k.toLowerCase()}`);
       if (box) box.style.display = k === t ? "" : "none";
     }
-    sheet.querySelector("#universe-box").style.display = MULTI_LIST.includes(t) ? "none" : "";
+    sheet.querySelector("#universe-box").style.display = MULTI_LIST.includes(t) && t !== "P7" ? "none" : "";
+    sheet.querySelector("#universe-label").textContent = t === "P7" ? "Lista per P1 e P2 (se scelte)" : "Lista universo";
     sheet.querySelector("#strategy-desc").textContent = strategyDescription({ strategy_type: t, params: {} })
-      + (MULTI_LIST.includes(t) ? " Lavora su FTSE MIB, Euro Stoxx 50 e S&P 100 insieme." : "");
+      + (MULTI_LIST.includes(t) && t !== "P7" ? " Lavora su FTSE MIB, Euro Stoxx 50 e S&P 100 insieme." : "");
   };
   selType.addEventListener("change", sync);
   sync();
@@ -218,16 +236,28 @@ async function openNewForm(onSuccess) {
       P1: { rebalance_band: parseFloat }, P2: { sma_months: parseInt },
       P3: { etf_share: parseFloat, refuge: String }, P4: { n_hold: parseInt, keep_rank: parseInt },
       P5: { max_positions: parseInt, max_days: parseInt },
+      P6: { p6_n_hold: parseInt, rebalance_month: parseInt },
     };
     for (const [k, parse] of Object.entries(FIELDS[stratType] || {})) {
       const v = parse(fd.get(k));
-      if (v !== "" && !(typeof v === "number" && isNaN(v))) params[k] = v;
+      if (v !== "" && !(typeof v === "number" && isNaN(v))) params[k.replace(/^p6_/, "")] = v;
+    }
+    if (stratType === "P7") {
+      const chosen = fd.getAll("sleeve");
+      if (chosen.length < 2) {
+        errEl.textContent = "Scegli almeno due strategie da combinare";
+        errEl.style.display = "block";
+        btn.disabled = false;
+        btn.textContent = "Crea portafoglio";
+        return;
+      }
+      params.sleeves = chosen.map((type) => ({ type, share: 1 }));
     }
 
     const body = {
       name: fd.get("name").trim(),
       strategy_type: stratType,
-      universe_list: MULTI_LIST.includes(stratType) ? null : fd.get("universe_list"),
+      universe_list: MULTI_LIST.includes(stratType) && stratType !== "P7" ? null : fd.get("universe_list"),
       initial_capital: parseFloat(fd.get("initial_capital")),
       params,
     };
@@ -265,8 +295,12 @@ export const STRATEGY_TITLES = {
   P3: "P3 – Dual momentum regionale",
   P4: "P4 – Momentum con filtro di tendenza",
   P5: "P5 – Ritorno alla media (RSI a 2 giorni)",
+  P6: "P6 – Valore + qualità (Magic Formula)",
+  P7: "P7 – Portafoglio combinato",
 };
-const MULTI_LIST = ["P3", "P4", "P5"];
+const MULTI_LIST = ["P3", "P4", "P5", "P6", "P7"];
+const MONTHS = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre",
+  "ottobre", "novembre", "dicembre"];
 
 export function strategyTitle(type) {
   return STRATEGY_TITLES[type] || type;
@@ -287,6 +321,12 @@ export function strategyDescription(cfg) {
       return `A fine mese mette in classifica i titoli di FTSE MIB, Euro Stoxx 50 e S&P 100 per quanto sono saliti in 12 mesi (escluso l'ultimo) e tiene i primi ${p.n_hold ?? 10}. Chi è già in portafoglio resta finché è tra i primi ${p.keep_rank ?? 20}. Compra solo se l'indice della borsa del titolo è sopra la sua media a ${p.trend_days ?? 200} giorni.`;
     case "P5":
       return `Ogni giorno cerca titoli in tendenza positiva (sopra la media a ${p.sma_long ?? 200} giorni) che hanno appena avuto un forte calo (RSI a 2 giorni sotto ${p.rsi_entry ?? 10}) e li compra aspettando il rimbalzo. Vende appena il prezzo supera la media a ${p.sma_exit ?? 5} giorni, se la tendenza si rompe o dopo ${p.max_days ?? 10} giorni. Al massimo ${p.max_positions ?? 5} titoli insieme.`;
+    case "P6":
+      return `Una volta l'anno, ad ${MONTHS[(p.rebalance_month ?? 4) - 1]}, mette in classifica i titoli delle tre liste (escluse banche, assicurazioni e utility) per quanto rendono gli utili rispetto al prezzo dell'azienda e per quanto è redditizio il capitale investito, e compra i ${p.n_hold ?? 15} migliori in parti uguali. Usa i bilanci più recenti: per questo non ha backtest.`;
+    case "P7": {
+      const sl = (p.sleeves || []).map((s) => `${s.type} ${pc(s.share)}`).join(", ") || "P2, P4 e P5 in parti uguali";
+      return `Mette insieme più strategie, ognuna con la sua quota del capitale (${sl}). Gli ordini sullo stesso titolo si compensano, nessuna azione supera il ${pc(p.max_weight ?? 0.1)} del totale e a ${MONTHS[(p.rebalance_month ?? 1) - 1]} le quote tornano alle percentuali stabilite.`;
+    }
     default:
       return "";
   }
@@ -312,6 +352,10 @@ const PARAM_LABELS = {
   max_days: ["Vende al più tardi dopo", (v) => `${v} giorni`],
   sma_long: ["Media di tendenza", (v) => `${v} giorni`],
   sma_exit: ["Media di uscita", (v) => `${v} giorni`],
+  rebalance_month: ["Mese della revisione", (v) => MONTHS[v - 1] || v],
+  exclude: ["Settori esclusi", (v) => v.map((x) => ({ banks: "banche", insurance: "assicurazioni", utilities: "utility" }[x] || x)).join(", ")],
+  max_weight: ["Peso massimo per azione", (v) => pc(v)],
+  sleeves: ["Strategie", (v) => v.map((s) => `${s.type} ${pc(s.share)}${s.params?.universe_list ? ` (${universeLabel(s.params.universe_list)})` : ""}`).join(", ")],
 };
 
 // Parametri tecnici → righe leggibili [etichetta, valore]
@@ -336,7 +380,9 @@ export function dataLine(cfg) {
   if (cfg.data_ready_pct < 75) {
     return `<p class="small muted" style="margin-top:.5rem">Dati pronti per il ${cfg.data_ready_pct}% dei titoli (servono almeno il 75%). Premi "Prova ora" per avviare il download.</p>`;
   }
-  const when = { P2: "l'ultimo giorno di borsa del mese", P3: "l'ultimo giorno di borsa del mese", P4: "l'ultimo giorno di borsa del mese" }[cfg.strategy_type] || "nei giorni di borsa";
+  const monthly = "l'ultimo giorno di borsa del mese";
+  const when = { P2: monthly, P3: monthly, P4: monthly,
+    P6: `una volta l'anno, ad ${MONTHS[(cfg.params?.rebalance_month ?? 4) - 1]},` }[cfg.strategy_type] || "nei giorni di borsa";
   return `<p class="small muted" style="margin-top:.5rem">Dati pronti (${cfg.data_ready_pct}% dei titoli). Opera ${when} alle ${cfg.session === "US" ? "21:30" : "17:00"}.</p>`;
 }
 

@@ -190,8 +190,9 @@ class EngineResult:
 class BacktestContext(StrategyContext):
     """La strategia vede lo stato simulato e lo storico fino al giorno simulato, mai oltre."""
 
-    def __init__(self, engine: "BacktestEngine", today: date):
+    def __init__(self, engine: "BacktestEngine", today: date, next_day: date | None = None):
         self.engine, self.today = engine, today
+        self.next_day = next_day  # giorno di borsa successivo (P7 lo usa per sapere quali quote operano)
 
     def quantity(self, symbol: str) -> Decimal:
         h = self.engine.holdings.get(symbol)
@@ -335,7 +336,7 @@ class BacktestEngine:
 
             next_day = cal[i + 1] if i + 1 < len(cal) else None
             if next_day is not None and self.strategy.should_run_today(d, next_day):
-                self._signal(d, braking)
+                self._signal(d, braking, next_day)
 
             pct = int((i + 1) * 100 / len(cal))
             if self.progress and pct != last_pct:
@@ -350,7 +351,7 @@ class BacktestEngine:
         return EngineResult(curve, self.trades, self.totals, final, self._liquidation_value(last),
                             days_braking, sum(1 for h in self.holdings.values() if h.qty > 0))
 
-    def _signal(self, d: date, braking: bool) -> None:
+    def _signal(self, d: date, braking: bool, next_day: date | None = None) -> None:
         ups = []
         for sym in self.symbols:
             info = self.instruments.get(sym)
@@ -362,7 +363,7 @@ class BacktestEngine:
                 meta = dict(market=info.market, instrument_type=info.type, listing_currency=info.currency)
             ups.append(UniversePrice(sym, None, price if ok else ZERO, "EUR", ok,
                                      groups=self.groups.get(sym, ()), **meta))
-        decisions = self.strategy.generate_decisions(BacktestContext(self, d), ups, braking)
+        decisions = self.strategy.generate_decisions(BacktestContext(self, d, next_day), ups, braking)
 
         prices = {up.symbol: up.price for up in ups if up.available}
         total = self.cash + sum((h.qty * prices[s] for s, h in self.holdings.items() if s in prices), ZERO)
@@ -682,6 +683,8 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
     from .auto_portfolio import strategy_symbols
     params = json.loads(run.params_json)
     strategy = STRATEGY_CLASSES[run.strategy_type](None, params)
+    if strategy.backtest_unavailable:
+        raise ValueError(strategy.backtest_unavailable)
     ss = strategy_symbols(db, strategy)
     symbols = ss.tradeable
     bench_specs, bench_label = benchmarks_for(strategy)

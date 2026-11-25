@@ -229,7 +229,7 @@ def test_create_multi_list_portfolio_via_api(provider, monkeypatch):
     from app.main import app
     from app.services import auto_portfolio
     started = []
-    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss: started.append(ss.key) or True)
+    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss, *a: started.append(ss.key) or True)
     with TestClient(app) as client:
         r = client.post("/api/auto", json={"name": "Momentum", "strategy_type": "P4", "initial_capital": 50000})
         assert r.status_code == 201, r.text

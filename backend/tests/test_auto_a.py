@@ -315,7 +315,7 @@ TODAY = date(2025, 3, 12)
 def no_background(monkeypatch):
     """Nei test la preparazione dati non deve avviare thread né scaricare da internet."""
     started = []
-    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss: started.append(ss.key) or True)
+    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss, *a: started.append(ss.key) or True)
     monkeypatch.setattr(auto_portfolio, "fetch_many", lambda db, symbols: {})
     return started
 

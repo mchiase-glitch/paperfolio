@@ -80,6 +80,10 @@ def start_backtest(config_id: int, body: BacktestBody, db: Session = Depends(get
         raise HTTPException(404, "Portafoglio automatico non trovato")
     if cfg.strategy_type not in backtest_svc.STRATEGY_CLASSES:
         raise HTTPException(400, f"Backtest non disponibile per {cfg.strategy_type}")
+    unavailable = backtest_svc.STRATEGY_CLASSES[cfg.strategy_type](None, json.loads(cfg.params_json or "{}")) \
+        .backtest_unavailable
+    if unavailable:
+        raise HTTPException(400, f"Backtest non disponibile: {unavailable}")
     end = body.end or date.today()
     if body.start >= end:
         raise HTTPException(400, "La data di inizio deve precedere quella di fine")

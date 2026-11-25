@@ -30,7 +30,7 @@ export async function renderAutoDetail(el, configId) {
     el.innerHTML = headerCard(cfg) + backtestList(backtests)
       + '<h3 class="section-title">Esecuzioni</h3>' + runsSection(runs);
 
-    el.querySelector("#btn-bt").addEventListener("click", () => openBacktestForm(cfg));
+    el.querySelector("#btn-bt")?.addEventListener("click", () => openBacktestForm(cfg));
     el.querySelectorAll("[data-bt]").forEach((r) =>
       r.addEventListener("click", () => (location.hash = `#/backtest/${r.dataset.bt}`)));
 
@@ -83,8 +83,9 @@ function headerCard(cfg) {
       ${dataLine(cfg)}
       <div class="btn-row" style="margin-top:.75rem">
         <button class="btn small" id="btn-dry">Prova ora (dry-run)</button>
-        <button class="btn small" id="btn-bt">Backtest</button>
+        ${cfg.backtest_unavailable ? "" : '<button class="btn small" id="btn-bt">Backtest</button>'}
       </div>
+      ${cfg.backtest_unavailable ? `<p class="small muted" style="margin-top:.5rem">Backtest non disponibile. ${esc(cfg.backtest_unavailable)}</p>` : ""}
     </section>`;
 }
 

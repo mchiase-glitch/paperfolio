@@ -37,6 +37,7 @@ from ..models import (
 )
 from sqlalchemy import func
 
+from . import fundamentals as fundamentals_svc
 from . import instruments as instruments_svc
 from . import orders as orders_svc
 from . import positions as positions_svc
@@ -94,6 +95,9 @@ class LiveContext(StrategyContext):
             self._closes[symbol] = ([r.date for r in rows], [r.close for r in rows], len(rows) - 1)
         return self._closes[symbol]
 
+    def fundamentals(self, symbol: str) -> dict | None:
+        return fundamentals_svc.get(self.db, symbol)
+
     def entry_date(self, symbol: str) -> date | None:
         """Giorno dell'acquisto che ha aperto la posizione attuale (quantità passata da zero a positiva)."""
         iid = self._instrument_id(symbol)
@@ -142,7 +146,18 @@ def strategy_symbols(db: Session, strategy: BaseStrategy) -> StrategySymbols:
 def make_strategy(config: StrategyConfig) -> BaseStrategy | None:
     cls = STRATEGY_CLASSES.get(config.strategy_type)
     params = json.loads(config.params_json) if config.params_json else {}
-    return cls(config, params) if cls else None
+    if cls is None:
+        return None
+    strategy = cls(config, params)
+    strategy.load_state(config.state_json)
+    return strategy
+
+
+def fundamentals_ready(db: Session, strategy: BaseStrategy, ss: "StrategySymbols") -> float:
+    """Quota di titoli con dati di bilancio (1 se la strategia non li usa)."""
+    if not strategy.needs_fundamentals:
+        return 1.0
+    return fundamentals_svc.coverage(db, ss.tradeable)
 
 
 def strategy_region(strategy: BaseStrategy) -> str:
@@ -214,13 +229,17 @@ def run_strategy(
     # ── Aggiorna cache prezzi (solo nello scheduler: nel dry-run la richiesta resterebbe appesa) ──
     if not is_dry_run and ready_pct(db, symbols, ss.reference) >= SAFETY_MIN_COVERAGE:
         fetch_many(db, symbols + ss.reference)
+        if strategy.needs_fundamentals:
+            for sym in fundamentals_svc.stale(db, symbols):
+                fundamentals_svc.refresh(db, sym)
+                time.sleep(FETCH_DELAY_S)
 
     # ── Passo 3: Interruttore di sicurezza ───────────────────────────────────
-    cov = ready_pct(db, symbols, ss.reference)
+    cov = min(ready_pct(db, symbols, ss.reference), fundamentals_ready(db, strategy, ss))
     if cov < SAFETY_MIN_COVERAGE:
-        start_preparation(ss)
-        note = (f"Dati storici pronti per il {cov*100:.0f}% dei titoli (minimo {SAFETY_MIN_COVERAGE*100:.0f}%): "
-                f"esecuzione saltata. {_preparation_text(ss.key)}")
+        start_preparation(ss, strategy.needs_fundamentals)
+        note = (f"Dati pronti per il {cov*100:.0f}% dei titoli (minimo {SAFETY_MIN_COVERAGE*100:.0f}%): "
+                f"esecuzione saltata. {_preparation_text(preparation_key(ss, strategy))}")
         run = _save_run(db, config, account, _side_key(run_key, now, "skip"), now, is_dry_run, "skipped", note)
         db.commit()
         return {"config_id": config.id, "run_id": run.id, "status": "skipped", "note": note}
@@ -241,10 +260,16 @@ def run_strategy(
         db, config, account, bool(config.is_drawdown_braking), today, current=total)
 
     # ── Passo 2: Segnale (delegato alla strategia) ───────────────────────────
-    decisions = strategy.generate_decisions(LiveContext(db, account, today), universe_prices, drawdown_braking)
+    ctx = LiveContext(db, account, today)
+    ctx.force_all = is_dry_run  # P7: la simulazione mostra cosa farebbero tutte le quote
+    decisions = strategy.generate_decisions(ctx, universe_prices, drawdown_braking)
 
     key = _side_key(run_key, now, "dry") if is_dry_run else run_key
     run = _save_run(db, config, account, key, now, is_dry_run, "ok", note)
+    if not is_dry_run:
+        state = strategy.dump_state()
+        if state is not None:
+            config.state_json = state
     db.commit()
 
     # ── Passo 4+5: Sizing e ordini (prima le vendite, che liberano liquidità) ──
@@ -325,23 +350,30 @@ def preparation_status(key: str) -> dict | None:
     return dict(st, failed=list(st["failed"])) if st else None
 
 
-def start_preparation(ss: StrategySymbols) -> bool:
-    """Registra i titoli della strategia e ne scarica lo storico (con indici e cambi) in un thread separato.
-    False se già in corso."""
+def start_preparation(ss: StrategySymbols, with_fundamentals: bool = False) -> bool:
+    """Registra i titoli della strategia e ne scarica lo storico (con indici e cambi) in un thread separato;
+    se serve anche i dati di bilancio. False se già in corso."""
+    key = ss.key + ("#bilanci" if with_fundamentals else "")
     with _prep_lock:
-        st = _prep_state.get(ss.key)
+        st = _prep_state.get(key)
         if st and st["running"]:
             return False
-        _prep_state[ss.key] = {"running": True, "done": 0, "total": len(ss.tradeable) + len(ss.reference),
-                               "failed": []}
-    threading.Thread(target=_prepare, args=(ss,), daemon=True, name=f"prep-{ss.key[:20]}").start()
+        total = len(ss.tradeable) * (2 if with_fundamentals else 1) + len(ss.reference)
+        _prep_state[key] = {"running": True, "done": 0, "total": total, "failed": []}
+    threading.Thread(target=_prepare, args=(ss, key, with_fundamentals), daemon=True,
+                     name=f"prep-{key[:20]}").start()
     return True
 
 
-def _prepare(ss: StrategySymbols) -> None:
+def preparation_key(ss: StrategySymbols, strategy: BaseStrategy) -> str:
+    return ss.key + ("#bilanci" if strategy.needs_fundamentals else "")
+
+
+def _prepare(ss: StrategySymbols, key: str | None = None, with_fundamentals: bool = False) -> None:
+    key = key or ss.key
     from ..database import SessionLocal
     from ..models import UniverseListItem
-    st = _prep_state[ss.key]
+    st = _prep_state[key]
     try:
         with SessionLocal() as db:
             isins = {i.symbol: i.isin for i in db.scalars(select(UniverseListItem).where(
@@ -354,11 +386,19 @@ def _prepare(ss: StrategySymbols) -> None:
                 except Exception as exc:
                     db.rollback()
                     st["failed"].append(sym)
-                    log.warning("Preparazione %s: %s non disponibile (%s)", ss.key, sym, exc)
+                    log.warning("Preparazione %s: %s non disponibile (%s)", key, sym, exc)
                 st["done"] += 1
                 time.sleep(FETCH_DELAY_S)
+            if with_fundamentals:
+                stale = set(fundamentals_svc.stale(db, ss.tradeable))
+                for sym in ss.tradeable:
+                    if sym in stale and fundamentals_svc.refresh(db, sym) is None:
+                        st["failed"].append(sym)
+                    st["done"] += 1
+                    if sym in stale:
+                        time.sleep(FETCH_DELAY_S)
     except Exception:
-        log.exception("Preparazione dati %s interrotta", ss.key)
+        log.exception("Preparazione dati %s interrotta", key)
     finally:
         st["running"] = False
 

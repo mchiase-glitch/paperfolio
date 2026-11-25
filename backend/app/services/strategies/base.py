@@ -96,6 +96,10 @@ class StrategyContext(ABC):
     def entry_date(self, symbol: str) -> date | None:
         """Giorno in cui è stata aperta la posizione attuale sul titolo (None se non posseduto)."""
 
+    def fundamentals(self, symbol: str) -> dict | None:
+        """Ultimi dati di bilancio (solo dal vivo: nel backtest non esistono quelli storici)."""
+        return None
+
     def held_days(self, symbol: str) -> int:
         """Giorni di borsa trascorsi dall'apertura della posizione (il giorno dell'acquisto non conta)."""
         entry = self.entry_date(symbol)
@@ -138,6 +142,17 @@ class BaseStrategy(ABC):
         Non piazza ordini: si limita a restituire le decisioni.
         """
 
+    # ── Caratteristiche ───────────────────────────────────────────────────────
+
+    needs_fundamentals = False  # usa i dati di bilancio (da scaricare prima)
+    backtest_unavailable: str | None = None  # motivo per cui il backtest non ha senso
+
+    def load_state(self, state_json: str | None) -> None:
+        """Stato tra un'esecuzione e l'altra (solo le strategie che ne hanno bisogno, es. P7)."""
+
+    def dump_state(self) -> str | None:
+        return None
+
     # ── Universo ──────────────────────────────────────────────────────────────
 
     def universe_lists(self) -> list[str]:
@@ -156,12 +171,7 @@ class BaseStrategy(ABC):
     # ── Helpers condivisi ─────────────────────────────────────────────────────
 
     def run_key(self, today: date) -> str:
-        if self.frequency == "daily":
-            return f"{self.config.id}_{self.config.strategy_type}_{today.isoformat()}"
-        elif self.frequency == "monthly":
-            return f"{self.config.id}_{self.config.strategy_type}_{today.year}-{today.month:02d}"
-        else:  # annual
-            return f"{self.config.id}_{self.config.strategy_type}_{today.year}"
+        return f"{self.config.id}_{self.config.strategy_type}_{period_key(self.frequency, today)}"
 
     def _param(self, key: str, default):
         v = self.params.get(key, default)
@@ -179,6 +189,15 @@ class BaseStrategy(ABC):
         if n == 0:
             return ZERO
         return Decimal("1") / Decimal(str(n))
+
+
+def period_key(frequency: str, today: date) -> str:
+    """Periodo a cui appartiene un giorno: lo stesso periodo non si esegue due volte."""
+    if frequency == "daily":
+        return today.isoformat()
+    if frequency == "monthly":
+        return f"{today.year}-{today.month:02d}"
+    return str(today.year)
 
 
 def holdings_value(ctx: StrategyContext, prices: list[UniversePrice]) -> Decimal:

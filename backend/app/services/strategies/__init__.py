@@ -4,6 +4,8 @@ from .p2_trend import P2Trend
 from .p3_dual_momentum import P3DualMomentum
 from .p4_momentum import P4Momentum
 from .p5_rsi2 import P5Rsi2
+from .p6_value_quality import P6ValueQuality
+from .p7_combined import P7Combined
 
 # Mappa tipo → classe strategia (dal vivo e nel backtest)
 STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
@@ -12,6 +14,8 @@ STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
     "P3": P3DualMomentum,
     "P4": P4Momentum,
     "P5": P5Rsi2,
+    "P6": P6ValueQuality,
+    "P7": P7Combined,
 }
 
 # Versione delle regole di ogni strategia, salvata con ogni backtest: se le regole cambiano,
@@ -22,4 +26,6 @@ STRATEGY_VERSIONS: dict[str, str] = {
     "P3": "1",
     "P4": "1",
     "P5": "1",
+    "P6": "1",
+    "P7": "1",
 }

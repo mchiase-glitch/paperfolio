@@ -39,9 +39,29 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
            "etf_ita": "IMIB.MI", "etf_eur": "MSE.MI", "etf_usa": "IUSA.MI", "etf_refuge": "XGLE.MI"},
     "P4": {"n_hold": 10, "keep_rank": 20, "trend_days": 200},
     "P5": {"max_positions": 5, "rsi_entry": 10, "max_days": 10, "sma_long": 200, "sma_exit": 5},
+    "P6": {"n_hold": 15, "rebalance_month": 4, "exclude": ["banks", "insurance", "utilities"], "rebalance_band": 0.2},
+    "P7": {"rebalance_month": 1, "max_weight": 0.10},
 }
 # Strategie che lavorano sulle tre liste insieme: la lista non si sceglie
-MULTI_LIST = {"P3", "P4", "P5"}
+MULTI_LIST = {"P3", "P4", "P5", "P6", "P7"}
+
+
+def _p7_sleeves(params: dict, universe_list: str | None) -> list[dict]:
+    """Quote di P7: strategie scelte (default P2, P4, P5) in parti uguali, ognuna con i suoi parametri predefiniti."""
+    sleeves = params.get("sleeves") or [{"type": t} for t in ("P2", "P4", "P5")]
+    out = []
+    for s in sleeves:
+        t = s.get("type")
+        if t not in STRATEGY_DEFAULTS or t == "P7":
+            raise HTTPException(400, f"Strategia non valida nel portafoglio combinato: {t}")
+        p = {**STRATEGY_DEFAULTS[t], **(s.get("params") or {})}
+        if t not in MULTI_LIST:
+            p.setdefault("universe_list", universe_list or "ftse_mib")
+        out.append({"type": t, "share": float(s.get("share") or 1), "params": p})
+    total = sum(s["share"] for s in out)
+    for s in out:
+        s["share"] = round(s["share"] / total, 6)
+    return out
 
 
 class CreateAutoBody(BaseModel):
@@ -82,8 +102,10 @@ def _config_dict(db: Session, cfg: StrategyConfig, account: Account | None) -> d
         pending = len(db.scalars(select(Order.id).where(Order.account_id == account.id,
                                                        Order.status == "pending")).all())
     return {
-        "data_ready_pct": round(auto_portfolio.ready_pct(db, ss.tradeable, ss.reference) * 100) if ss else 0,
-        "preparation": auto_portfolio.preparation_status(ss.key) if ss else None,
+        "data_ready_pct": round(min(auto_portfolio.ready_pct(db, ss.tradeable, ss.reference),
+                                    auto_portfolio.fundamentals_ready(db, strategy, ss)) * 100) if ss else 0,
+        "preparation": auto_portfolio.preparation_status(auto_portfolio.preparation_key(ss, strategy)) if ss else None,
+        "backtest_unavailable": strategy.backtest_unavailable if strategy else None,
         "universe_lists": strategy.universe_lists() if strategy else [],
         "session": auto_portfolio.strategy_region(strategy) if strategy else None,
         "positions_count": len(positions_svc.open_positions(db, account.id)) if account else 0,
@@ -128,6 +150,8 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
         merged_params = {**defaults, **body.params}
         if not multi:
             merged_params["universe_list"] = body.universe_list
+        if body.strategy_type == "P7":
+            merged_params["sleeves"] = _p7_sleeves(body.params, body.universe_list)
 
         cfg = StrategyConfig(
             name=body.name,
@@ -152,8 +176,11 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
         db.refresh(cfg)
         db.refresh(account)
         strategy = auto_portfolio.make_strategy(cfg)
-        auto_portfolio.start_preparation(auto_portfolio.strategy_symbols(db, strategy))
+        auto_portfolio.start_preparation(auto_portfolio.strategy_symbols(db, strategy), strategy.needs_fundamentals)
         return _config_dict(db, cfg, account)
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as exc:
         db.rollback()
         tb = traceback.format_exc()

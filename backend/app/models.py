@@ -277,6 +277,18 @@ class StrategyConfig(Base):
     is_paused: Mapped[int] = mapped_column(Integer, default=0)
     is_drawdown_braking: Mapped[int] = mapped_column(Integer, default=0)  # freno drawdown attivo
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # Stato interno della strategia tra un'esecuzione e l'altra (P7: quote delle singole strategie)
+    state_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Fundamentals(Base):
+    """Ultimi dati di bilancio di un titolo (per P6), come li fornisce la fonte."""
+
+    __tablename__ = "fundamentals"
+
+    symbol: Mapped[str] = mapped_column(String(40), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    data_json: Mapped[str] = mapped_column(Text)
 
 
 class StrategyRun(Base):
