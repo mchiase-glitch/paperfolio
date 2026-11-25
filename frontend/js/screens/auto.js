@@ -84,7 +84,8 @@ export async function renderAuto(el) {
 // Ricarica la vista finché c'è un download di dati in corso
 export function pollWhilePreparing(el, configs, reload) {
   if (!configs.some((c) => c.preparation?.running)) return;
-  setTimeout(() => { if (el.isConnected) reload(); }, 8000);
+  const screen = location.hash;  // se nel frattempo si è cambiata schermata, non si ricarica
+  setTimeout(() => { if (el.isConnected && location.hash === screen) reload(); }, 8000);
 }
 
 // ── Form "Nuova strategia" ────────────────────────────────────────────────────
@@ -116,13 +117,13 @@ async function openNewForm(onSuccess) {
         <div class="form-group">
           <label>Tipo strategia</label>
           <select name="strategy_type" id="sel-strategy-type" required>
-            <option value="P1">P1 – Compra e tieni con ribilanciamento</option>
-            <option value="P2">P2 – Segue la tendenza (Faber)</option>
+            ${Object.entries(STRATEGY_TITLES).map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("")}
           </select>
+          <p class="small muted" id="strategy-desc" style="margin:.3rem 0 0"></p>
         </div>
-        <div class="form-group">
+        <div class="form-group" id="universe-box">
           <label>Lista universo</label>
-          <select name="universe_list" required>
+          <select name="universe_list">
             ${universiOptions || '<option value="">Nessun universo disponibile</option>'}
           </select>
         </div>
@@ -142,6 +143,36 @@ async function openNewForm(onSuccess) {
             <input type="number" name="sma_months" min="3" max="24" step="1" value="10">
           </div>
         </div>
+        <div id="params-p3" style="display:none">
+          <div class="form-group">
+            <label>Quota in ETF (0.5 = 50%; 1 = solo ETF, 0 = solo azioni)</label>
+            <input type="number" name="etf_share" min="0" max="1" step="0.1" value="0.5">
+          </div>
+          <div class="form-group">
+            <label>Rifugio quando nessuna regione sale</label>
+            <select name="refuge"><option value="bond">ETF di titoli di Stato in euro</option><option value="cash">Liquidità</option></select>
+          </div>
+        </div>
+        <div id="params-p4" style="display:none">
+          <div class="form-group">
+            <label>Titoli in portafoglio</label>
+            <input type="number" name="n_hold" min="3" max="30" step="1" value="10">
+          </div>
+          <div class="form-group">
+            <label>Si tengono finché sono tra i primi</label>
+            <input type="number" name="keep_rank" min="3" max="60" step="1" value="20">
+          </div>
+        </div>
+        <div id="params-p5" style="display:none">
+          <div class="form-group">
+            <label>Posizioni al massimo</label>
+            <input type="number" name="max_positions" min="1" max="20" step="1" value="5">
+          </div>
+          <div class="form-group">
+            <label>Vende al più tardi dopo (giorni di borsa)</label>
+            <input type="number" name="max_days" min="2" max="40" step="1" value="10">
+          </div>
+        </div>
         <div class="btn-row" style="margin-top:1rem">
           <button type="submit" class="btn" id="btn-submit-auto">Crea portafoglio</button>
           <button type="button" class="btn btn-muted sheet-close">Annulla</button>
@@ -154,12 +185,18 @@ async function openNewForm(onSuccess) {
 
   // Toggle parametri per tipo
   const selType = sheet.querySelector("#sel-strategy-type");
-  const paramsP1 = sheet.querySelector("#params-p1");
-  const paramsP2 = sheet.querySelector("#params-p2");
-  selType.addEventListener("change", () => {
-    paramsP1.style.display = selType.value === "P1" ? "" : "none";
-    paramsP2.style.display = selType.value === "P2" ? "" : "none";
-  });
+  const sync = () => {
+    const t = selType.value;
+    for (const k of Object.keys(STRATEGY_TITLES)) {
+      const box = sheet.querySelector(`#params-${k.toLowerCase()}`);
+      if (box) box.style.display = k === t ? "" : "none";
+    }
+    sheet.querySelector("#universe-box").style.display = MULTI_LIST.includes(t) ? "none" : "";
+    sheet.querySelector("#strategy-desc").textContent = strategyDescription({ strategy_type: t, params: {} })
+      + (MULTI_LIST.includes(t) ? " Lavora su FTSE MIB, Euro Stoxx 50 e S&P 100 insieme." : "");
+  };
+  selType.addEventListener("change", sync);
+  sync();
 
   sheet.querySelectorAll(".sheet-close").forEach((b) =>
     b.addEventListener("click", () => sheet.remove())
@@ -177,18 +214,20 @@ async function openNewForm(onSuccess) {
     const fd = new FormData(e.target);
     const stratType = fd.get("strategy_type");
     const params = {};
-    if (stratType === "P1") {
-      const v = parseFloat(fd.get("rebalance_band"));
-      if (!isNaN(v)) params.rebalance_band = v;
-    } else if (stratType === "P2") {
-      const v = parseInt(fd.get("sma_months"), 10);
-      if (!isNaN(v)) params.sma_months = v;
+    const FIELDS = {
+      P1: { rebalance_band: parseFloat }, P2: { sma_months: parseInt },
+      P3: { etf_share: parseFloat, refuge: String }, P4: { n_hold: parseInt, keep_rank: parseInt },
+      P5: { max_positions: parseInt, max_days: parseInt },
+    };
+    for (const [k, parse] of Object.entries(FIELDS[stratType] || {})) {
+      const v = parse(fd.get(k));
+      if (v !== "" && !(typeof v === "number" && isNaN(v))) params[k] = v;
     }
 
     const body = {
       name: fd.get("name").trim(),
       strategy_type: stratType,
-      universe_list: fd.get("universe_list"),
+      universe_list: MULTI_LIST.includes(stratType) ? null : fd.get("universe_list"),
       initial_capital: parseFloat(fd.get("initial_capital")),
       params,
     };
@@ -214,36 +253,75 @@ export function universeLabel(name) {
   return UNIVERSE_LABELS[name] || name || "";
 }
 
-export function strategyTitle(type) {
-  if (type === "P1") return "P1 – Compra e tieni con ribilanciamento";
-  if (type === "P2") return "P2 – Segue la tendenza (Faber)";
-  return type;
+// Liste su cui lavora un portafoglio (P3–P5 usano tutte e tre)
+export function listsLabel(cfg) {
+  const lists = cfg.universe_lists?.length ? cfg.universe_lists : [cfg.params?.universe_list].filter(Boolean);
+  return lists.map(universeLabel).join(", ");
 }
+
+export const STRATEGY_TITLES = {
+  P1: "P1 – Compra e tieni con ribilanciamento",
+  P2: "P2 – Segue la tendenza (Faber)",
+  P3: "P3 – Dual momentum regionale",
+  P4: "P4 – Momentum con filtro di tendenza",
+  P5: "P5 – Ritorno alla media (RSI a 2 giorni)",
+};
+const MULTI_LIST = ["P3", "P4", "P5"];
+
+export function strategyTitle(type) {
+  return STRATEGY_TITLES[type] || type;
+}
+
+const pc = (v, d = 0) => `${(Number(v) * 100).toFixed(d).replace(".", ",")}%`;
 
 export function strategyDescription(cfg) {
   const p = cfg.params || {};
-  if (cfg.strategy_type === "P1") {
-    const band = Math.round((p.rebalance_band ?? 0.25) * 100);
-    return `Divide il capitale in parti uguali su tutti i titoli dell'elenco. Ogni giorno di borsa controlla i pesi: se un titolo si allontana più del ${band}% dalla sua quota, compra o vende per riportarlo in linea.`;
+  switch (cfg.strategy_type) {
+    case "P1":
+      return `Divide il capitale in parti uguali su tutti i titoli dell'elenco. Ogni giorno di borsa controlla i pesi: se un titolo si allontana più del ${pc(p.rebalance_band ?? 0.25)} dalla sua quota, compra o vende per riportarlo in linea.`;
+    case "P2":
+      return `Una volta al mese, a fine mese, confronta il prezzo di ogni titolo con la sua media degli ultimi ${p.sma_months ?? 10} mesi: se è sopra lo tiene o lo compra (parti uguali), se è sotto lo vende e resta in liquidità.`;
+    case "P3":
+      return `A fine mese confronta il rendimento in euro degli ultimi 12 mesi di Italia, Europa e Stati Uniti e investe nella regione migliore: ${pc(p.etf_share ?? 0.5)} nel suo ETF e il resto nei ${p.n_stocks ?? 10} titoli della regione saliti di più (escluso l'ultimo mese). Se nessuna regione guadagna più del ${pc(p.abs_threshold ?? 0)}, passa ${p.refuge === "cash" ? "in liquidità" : "all'ETF di titoli di Stato in euro"}.`;
+    case "P4":
+      return `A fine mese mette in classifica i titoli di FTSE MIB, Euro Stoxx 50 e S&P 100 per quanto sono saliti in 12 mesi (escluso l'ultimo) e tiene i primi ${p.n_hold ?? 10}. Chi è già in portafoglio resta finché è tra i primi ${p.keep_rank ?? 20}. Compra solo se l'indice della borsa del titolo è sopra la sua media a ${p.trend_days ?? 200} giorni.`;
+    case "P5":
+      return `Ogni giorno cerca titoli in tendenza positiva (sopra la media a ${p.sma_long ?? 200} giorni) che hanno appena avuto un forte calo (RSI a 2 giorni sotto ${p.rsi_entry ?? 10}) e li compra aspettando il rimbalzo. Vende appena il prezzo supera la media a ${p.sma_exit ?? 5} giorni, se la tendenza si rompe o dopo ${p.max_days ?? 10} giorni. Al massimo ${p.max_positions ?? 5} titoli insieme.`;
+    default:
+      return "";
   }
-  if (cfg.strategy_type === "P2") {
-    const m = p.sma_months ?? 10;
-    return `Una volta al mese, a fine mese, confronta il prezzo di ogni titolo con la sua media degli ultimi ${m} mesi: se è sopra lo tiene o lo compra (parti uguali), se è sotto lo vende e resta in liquidità.`;
-  }
-  return "";
 }
+
+const PARAM_LABELS = {
+  rebalance_band: ["Tolleranza", (v) => pc(v)],
+  sma_months: ["Media su", (v) => `${v} mesi`],
+  min_history_days: ["Storico minimo", (v) => `${v} giorni`],
+  etf_share: ["Quota in ETF", (v) => pc(v)],
+  n_stocks: ["Titoli della regione", (v) => v],
+  abs_threshold: ["Soglia di rendimento", (v) => pc(v, 1)],
+  refuge: ["Rifugio", (v) => (v === "cash" ? "Liquidità" : "ETF titoli di Stato")],
+  etf_ita: ["ETF Italia", (v) => v],
+  etf_eur: ["ETF Europa", (v) => v],
+  etf_usa: ["ETF Stati Uniti", (v) => v],
+  etf_refuge: ["ETF rifugio", (v) => v],
+  n_hold: ["Titoli in portafoglio", (v) => v],
+  keep_rank: ["Si tengono fino al posto", (v) => v],
+  trend_days: ["Media dell'indice", (v) => `${v} giorni`],
+  max_positions: ["Posizioni al massimo", (v) => v],
+  rsi_entry: ["Compra con RSI(2) sotto", (v) => v],
+  max_days: ["Vende al più tardi dopo", (v) => `${v} giorni`],
+  sma_long: ["Media di tendenza", (v) => `${v} giorni`],
+  sma_exit: ["Media di uscita", (v) => `${v} giorni`],
+};
 
 // Parametri tecnici → righe leggibili [etichetta, valore]
 export function readableParams(cfg) {
   const p = cfg.params || {};
-  const rows = [];
-  if (p.universe_list) rows.push(["Elenco titoli", universeLabel(p.universe_list)]);
-  if (p.rebalance_band != null) rows.push(["Tolleranza", `${Math.round(p.rebalance_band * 100)}%`]);
-  if (p.sma_months != null) rows.push(["Media su", `${p.sma_months} mesi`]);
-  if (p.min_history_days != null) rows.push(["Storico minimo", `${p.min_history_days} giorni`]);
-  const known = ["universe_list", "rebalance_band", "sma_months", "min_history_days"];
+  const rows = [["Elenco titoli", listsLabel(cfg)]];
   for (const [k, v] of Object.entries(p)) {
-    if (!known.includes(k)) rows.push([k, String(v)]);
+    if (k === "universe_list" || k === "universe_lists" || k === "risk_free") continue;
+    const known = PARAM_LABELS[k];
+    rows.push(known ? [known[0], String(known[1](v))] : [k, String(v)]);
   }
   return rows;
 }
@@ -258,7 +336,8 @@ export function dataLine(cfg) {
   if (cfg.data_ready_pct < 75) {
     return `<p class="small muted" style="margin-top:.5rem">Dati pronti per il ${cfg.data_ready_pct}% dei titoli (servono almeno il 75%). Premi "Prova ora" per avviare il download.</p>`;
   }
-  return `<p class="small muted" style="margin-top:.5rem">Dati pronti (${cfg.data_ready_pct}% dei titoli). Opera nei giorni di borsa alle ${cfg.params?.universe_list === "sp100" ? "21:30" : "17:00"}.</p>`;
+  const when = { P2: "l'ultimo giorno di borsa del mese", P3: "l'ultimo giorno di borsa del mese", P4: "l'ultimo giorno di borsa del mese" }[cfg.strategy_type] || "nei giorni di borsa";
+  return `<p class="small muted" style="margin-top:.5rem">Dati pronti (${cfg.data_ready_pct}% dei titoli). Opera ${when} alle ${cfg.session === "US" ? "21:30" : "17:00"}.</p>`;
 }
 
 function configCard(cfg) {
@@ -280,7 +359,7 @@ function configCard(cfg) {
       <div class="card-row">
         <div>
           <h3>${esc(cfg.name)}</h3>
-          <div class="small muted">${esc(strategyTitle(cfg.strategy_type))} · ${esc(universeLabel(cfg.params?.universe_list))}</div>
+          <div class="small muted">${esc(strategyTitle(cfg.strategy_type))} · ${esc(listsLabel(cfg))}</div>
         </div>
         ${statusLabel}
       </div>

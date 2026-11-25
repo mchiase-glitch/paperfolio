@@ -20,6 +20,7 @@ import logging
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from zoneinfo import ZoneInfo
@@ -85,12 +86,70 @@ class LiveContext(StrategyContext):
         return self.db.scalar(select(func.count(PriceHistoryCache.id)).where(
             PriceHistoryCache.symbol == symbol, PriceHistoryCache.date <= self.today)) or 0
 
-# Mercato di riferimento di ogni universo: decide in quale sessione gira la strategia
-REGION_BY_UNIVERSE = {"sp100": "US"}
+    def closes(self, symbol: str) -> tuple[list[date], list[float], int]:
+        if not hasattr(self, "_closes"):
+            self._closes: dict[str, tuple[list[date], list[float], int]] = {}
+        if symbol not in self._closes:
+            rows = get_rows(self.db, symbol, self.today - timedelta(days=CLOSES_WINDOW_DAYS), self.today)
+            self._closes[symbol] = ([r.date for r in rows], [r.close for r in rows], len(rows) - 1)
+        return self._closes[symbol]
+
+    def entry_date(self, symbol: str) -> date | None:
+        """Giorno dell'acquisto che ha aperto la posizione attuale (quantità passata da zero a positiva)."""
+        iid = self._instrument_id(symbol)
+        if not iid:
+            return None
+        qty, opened = ZERO, None
+        for e in positions_svc.ledger(self.db, self.account.id):
+            if e.instrument_id != iid or e.kind not in ("buy", "sell", "redemption", "split"):
+                continue
+            if e.kind == "buy":
+                if qty <= 0:
+                    opened = e.ts.astimezone(ROME).date()
+                qty += e.quantity
+            elif e.kind == "split":
+                qty *= e.ratio
+            else:
+                qty -= e.quantity
+        return opened if qty > 0 else None
 
 
-def universe_region(universe_list: str | None) -> str:
-    return REGION_BY_UNIVERSE.get(universe_list or "", "EU")
+# Storico letto dal vivo per gli indicatori: momentum 12-1 e media a 200 giorni più un margine
+CLOSES_WINDOW_DAYS = 450
+
+
+@dataclass
+class StrategySymbols:
+    tradeable: list[str]          # titoli e ETF che la strategia può comprare
+    reference: list[str]          # indici e cambi letti dai segnali
+    groups: dict[str, tuple[str, ...]]  # simbolo → liste di universo che lo contengono
+    key: str                      # identifica la preparazione dei dati (condivisa tra strategie uguali)
+
+
+def strategy_symbols(db: Session, strategy: BaseStrategy) -> StrategySymbols:
+    lists = strategy.universe_lists()
+    groups: dict[str, tuple[str, ...]] = {}
+    for name in lists:
+        for sym in get_symbols(db, [name]):
+            groups[sym] = groups.get(sym, ()) + (name,)
+    extra = [s for s in strategy.extra_tradeable() if s not in groups]
+    tradeable = list(groups) + extra
+    reference = strategy.reference_symbols()
+    key = "+".join(sorted(lists)) + ("|" + ",".join(sorted(extra + reference)) if extra or reference else "")
+    return StrategySymbols(tradeable, reference, groups, key)
+
+
+def make_strategy(config: StrategyConfig) -> BaseStrategy | None:
+    cls = STRATEGY_CLASSES.get(config.strategy_type)
+    params = json.loads(config.params_json) if config.params_json else {}
+    return cls(config, params) if cls else None
+
+
+def strategy_region(strategy: BaseStrategy) -> str:
+    """Sessione in cui gira la strategia: solo titoli USA → sera (21:30); altrimenti pomeriggio (17:00),
+    quando sono aperte sia le borse europee sia Wall Street."""
+    lists = strategy.universe_lists()
+    return "US" if lists and all(name == "sp100" for name in lists) and not strategy.extra_tradeable() else "EU"
 
 
 # ── Entry point principale ────────────────────────────────────────────────────
@@ -104,8 +163,8 @@ def run_all_strategies(db: Session, is_dry_run: bool = False, today: date | None
 
     results = []
     for cfg in configs:
-        params = json.loads(cfg.params_json) if cfg.params_json else {}
-        if region and universe_region(params.get("universe_list")) != region:
+        strategy = make_strategy(cfg)
+        if region and (strategy is None or strategy_region(strategy) != region):
             continue
         try:
             results.append(run_strategy(db, cfg, is_dry_run=is_dry_run, today=today))
@@ -128,12 +187,9 @@ def run_strategy(
     if today is None:
         today = now.astimezone(ROME).date()
 
-    params = json.loads(config.params_json) if config.params_json else {}
-    strategy_cls = STRATEGY_CLASSES.get(config.strategy_type)
-    if strategy_cls is None:
+    strategy = make_strategy(config)
+    if strategy is None:
         return {"config_id": config.id, "status": "skipped", "note": f"Tipo {config.strategy_type} non implementato"}
-
-    strategy: BaseStrategy = strategy_cls(config, params)
 
     # ── Idempotenza (solo esecuzioni reali) ──────────────────────────────────
     run_key = strategy.run_key(today)
@@ -150,24 +206,21 @@ def run_strategy(
         return {"config_id": config.id, "status": "skipped", "note": "Nessun portafoglio collegato"}
 
     # ── Passo 1: Universo ────────────────────────────────────────────────────
-    universe_list = params.get("universe_list")
-    if not universe_list:
-        return {"config_id": config.id, "status": "skipped", "note": "universe_list non configurata"}
-
-    symbols = get_symbols(db, [universe_list])
+    ss = strategy_symbols(db, strategy)
+    symbols = ss.tradeable
     if not symbols:
-        return {"config_id": config.id, "status": "skipped", "note": f"Lista universo {universe_list!r} vuota"}
+        return {"config_id": config.id, "status": "skipped", "note": "Nessun titolo nell'universo della strategia"}
 
     # ── Aggiorna cache prezzi (solo nello scheduler: nel dry-run la richiesta resterebbe appesa) ──
-    if not is_dry_run and ready_pct(db, symbols) >= SAFETY_MIN_COVERAGE:
-        fetch_many(db, symbols)
+    if not is_dry_run and ready_pct(db, symbols, ss.reference) >= SAFETY_MIN_COVERAGE:
+        fetch_many(db, symbols + ss.reference)
 
     # ── Passo 3: Interruttore di sicurezza ───────────────────────────────────
-    cov = ready_pct(db, symbols)
+    cov = ready_pct(db, symbols, ss.reference)
     if cov < SAFETY_MIN_COVERAGE:
-        start_preparation(universe_list)
+        start_preparation(ss)
         note = (f"Dati storici pronti per il {cov*100:.0f}% dei titoli (minimo {SAFETY_MIN_COVERAGE*100:.0f}%): "
-                f"esecuzione saltata. {_preparation_text(universe_list)}")
+                f"esecuzione saltata. {_preparation_text(ss.key)}")
         run = _save_run(db, config, account, _side_key(run_key, now, "skip"), now, is_dry_run, "skipped", note)
         db.commit()
         return {"config_id": config.id, "run_id": run.id, "status": "skipped", "note": note}
@@ -179,7 +232,7 @@ def run_strategy(
                    else "una volta l'anno." if strategy.frequency == "annual" else "nei giorni di borsa."))
 
     # ── Prezzi correnti dell'universo (in EUR) ───────────────────────────────
-    universe_prices = _build_universe_prices(db, symbols, today)
+    universe_prices = _build_universe_prices(db, symbols, today, ss.groups)
     price_map = {up.symbol: up for up in universe_prices}
     total = positions_svc.cash_balance(db, account.id) + _portfolio_value(db, account.id, price_map)
 
@@ -267,56 +320,63 @@ _prep_lock = threading.Lock()
 _prep_state: dict[str, dict] = {}
 
 
-def preparation_status(universe_list: str) -> dict | None:
-    st = _prep_state.get(universe_list)
+def preparation_status(key: str) -> dict | None:
+    st = _prep_state.get(key)
     return dict(st, failed=list(st["failed"])) if st else None
 
 
-def start_preparation(universe_list: str) -> bool:
-    """Registra i titoli dell'universo e ne scarica lo storico in un thread separato. False se già in corso."""
+def start_preparation(ss: StrategySymbols) -> bool:
+    """Registra i titoli della strategia e ne scarica lo storico (con indici e cambi) in un thread separato.
+    False se già in corso."""
     with _prep_lock:
-        st = _prep_state.get(universe_list)
+        st = _prep_state.get(ss.key)
         if st and st["running"]:
             return False
-        _prep_state[universe_list] = {"running": True, "done": 0, "total": 0, "failed": []}
-    threading.Thread(target=_prepare, args=(universe_list,), daemon=True, name=f"prep-{universe_list}").start()
+        _prep_state[ss.key] = {"running": True, "done": 0, "total": len(ss.tradeable) + len(ss.reference),
+                               "failed": []}
+    threading.Thread(target=_prepare, args=(ss,), daemon=True, name=f"prep-{ss.key[:20]}").start()
     return True
 
 
-def _prepare(universe_list: str) -> None:
+def _prepare(ss: StrategySymbols) -> None:
     from ..database import SessionLocal
-    st = _prep_state[universe_list]
+    from ..models import UniverseListItem
+    st = _prep_state[ss.key]
     try:
         with SessionLocal() as db:
-            items = get_items(db, universe_list)
-            st["total"] = len(items)
-            for item in items:
+            isins = {i.symbol: i.isin for i in db.scalars(select(UniverseListItem).where(
+                UniverseListItem.symbol.in_(ss.tradeable)))}
+            for sym in ss.tradeable + ss.reference:
                 try:
-                    instruments_svc.get_or_create(db, item.symbol, item.isin)
-                    fetch_history(db, item.symbol)
+                    if sym in ss.tradeable:
+                        instruments_svc.get_or_create(db, sym, isins.get(sym))
+                    fetch_history(db, sym)
                 except Exception as exc:
                     db.rollback()
-                    st["failed"].append(item.symbol)
-                    log.warning("Preparazione %s: %s non disponibile (%s)", universe_list, item.symbol, exc)
+                    st["failed"].append(sym)
+                    log.warning("Preparazione %s: %s non disponibile (%s)", ss.key, sym, exc)
                 st["done"] += 1
                 time.sleep(FETCH_DELAY_S)
     except Exception:
-        log.exception("Preparazione universo %s interrotta", universe_list)
+        log.exception("Preparazione dati %s interrotta", ss.key)
     finally:
         st["running"] = False
 
 
-def ready_pct(db: Session, symbols: list[str]) -> float:
-    """Quota di titoli negoziabili: registrati come strumento e con storico sufficiente."""
-    if not symbols:
+def ready_pct(db: Session, symbols: list[str], reference: list[str] | None = None) -> float:
+    """Quota di dati pronti: titoli registrati come strumento e con storico sufficiente,
+    indici e cambi con storico sufficiente."""
+    reference = reference or []
+    if not symbols and not reference:
         return 1.0
     known = set(db.scalars(select(Instrument.symbol).where(Instrument.symbol.in_(symbols))))
     ok = sum(1 for s in symbols if s in known and has_enough_history(db, s, MIN_HISTORY_DAYS))
-    return ok / len(symbols)
+    ok += sum(1 for s in reference if has_enough_history(db, s, MIN_HISTORY_DAYS))
+    return ok / (len(symbols) + len(reference))
 
 
-def _preparation_text(universe_list: str) -> str:
-    st = preparation_status(universe_list)
+def _preparation_text(key: str) -> str:
+    st = preparation_status(key)
     if st is None:
         return ""
     if st["running"]:
@@ -352,18 +412,23 @@ def _save_run(
     return run
 
 
-def _build_universe_prices(db: Session, symbols: list[str], today: date) -> list[UniversePrice]:
+def _build_universe_prices(db: Session, symbols: list[str], today: date,
+                           groups: dict[str, tuple[str, ...]] | None = None) -> list[UniversePrice]:
     """
     Ultima chiusura in cache di ogni titolo, convertita in EUR.
     Un titolo non registrato come strumento o senza prezzi recenti non è negoziabile.
     """
+    groups = groups or {}
     fx_cache: dict[str, Decimal | None] = {}
     result = []
     for sym in symbols:
         instr = db.scalar(select(Instrument).where(Instrument.symbol == sym))
         rows = get_rows(db, sym, today - timedelta(days=14), today)
+        meta = dict(groups=groups.get(sym, ()))
+        if instr is not None:
+            meta.update(market=instr.market, instrument_type=instr.type, listing_currency=instr.currency)
         if instr is None or not rows:
-            result.append(UniversePrice(sym, instr.id if instr else None, ZERO, "EUR", False))
+            result.append(UniversePrice(sym, instr.id if instr else None, ZERO, "EUR", False, **meta))
             continue
         if instr.currency not in fx_cache:
             try:
@@ -372,9 +437,9 @@ def _build_universe_prices(db: Session, symbols: list[str], today: date) -> list
                 fx_cache[instr.currency] = None
         fx = fx_cache[instr.currency]
         if not fx:
-            result.append(UniversePrice(sym, instr.id, ZERO, "EUR", False))
+            result.append(UniversePrice(sym, instr.id, ZERO, "EUR", False, **meta))
             continue
-        result.append(UniversePrice(sym, instr.id, Decimal(str(rows[-1].close)) / fx, "EUR", True))
+        result.append(UniversePrice(sym, instr.id, Decimal(str(rows[-1].close)) / fx, "EUR", True, **meta))
     return result
 
 

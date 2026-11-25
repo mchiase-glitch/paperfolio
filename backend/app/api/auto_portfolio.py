@@ -35,13 +35,19 @@ router = APIRouter(prefix="/api", tags=["automatici"])
 STRATEGY_DEFAULTS: dict[str, dict] = {
     "P1": {"rebalance_band": 0.25},
     "P2": {"sma_months": 10},
+    "P3": {"etf_share": 0.5, "n_stocks": 10, "abs_threshold": 0.0, "refuge": "bond", "rebalance_band": 0.2,
+           "etf_ita": "IMIB.MI", "etf_eur": "MSE.MI", "etf_usa": "IUSA.MI", "etf_refuge": "XGLE.MI"},
+    "P4": {"n_hold": 10, "keep_rank": 20, "trend_days": 200},
+    "P5": {"max_positions": 5, "rsi_entry": 10, "max_days": 10, "sma_long": 200, "sma_exit": 5},
 }
+# Strategie che lavorano sulle tre liste insieme: la lista non si sceglie
+MULTI_LIST = {"P3", "P4", "P5"}
 
 
 class CreateAutoBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     strategy_type: str = Field(..., pattern=r"^P[1-9]$")
-    universe_list: str = Field(..., min_length=1)
+    universe_list: str | None = None
     initial_capital: Decimal = Field(..., gt=0)
     params: dict = Field(default_factory=dict)
 
@@ -69,15 +75,17 @@ def get_universe_items(name: str, db: Session = Depends(get_db)):
 
 def _config_dict(db: Session, cfg: StrategyConfig, account: Account | None) -> dict:
     params = json.loads(cfg.params_json) if cfg.params_json else {}
-    universe_list = params.get("universe_list") or ""
-    symbols = universes.get_symbols(db, [universe_list])
+    strategy = auto_portfolio.make_strategy(cfg)
+    ss = auto_portfolio.strategy_symbols(db, strategy) if strategy else None
     pending = 0
     if account:
         pending = len(db.scalars(select(Order.id).where(Order.account_id == account.id,
                                                        Order.status == "pending")).all())
     return {
-        "data_ready_pct": round(auto_portfolio.ready_pct(db, symbols) * 100),
-        "preparation": auto_portfolio.preparation_status(universe_list),
+        "data_ready_pct": round(auto_portfolio.ready_pct(db, ss.tradeable, ss.reference) * 100) if ss else 0,
+        "preparation": auto_portfolio.preparation_status(ss.key) if ss else None,
+        "universe_lists": strategy.universe_lists() if strategy else [],
+        "session": auto_portfolio.strategy_region(strategy) if strategy else None,
         "positions_count": len(positions_svc.open_positions(db, account.id)) if account else 0,
         "pending_orders": pending,
         "id": cfg.id,
@@ -110,13 +118,16 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
     if body.strategy_type not in auto_portfolio.STRATEGY_CLASSES:
         raise HTTPException(400, f"Tipo strategia '{body.strategy_type}' non supportato")
 
-    if universes.get_list(db, body.universe_list) is None:
+    multi = body.strategy_type in MULTI_LIST
+    if not multi and (not body.universe_list or universes.get_list(db, body.universe_list) is None):
         raise HTTPException(400, f"Universo '{body.universe_list}' non trovato")
 
     try:
-        # Merge defaults + params utente; aggiungi sempre universe_list
+        # Parametri predefiniti + quelli scelti; le strategie su una sola lista ricordano quale
         defaults = STRATEGY_DEFAULTS.get(body.strategy_type, {})
-        merged_params = {**defaults, **body.params, "universe_list": body.universe_list}
+        merged_params = {**defaults, **body.params}
+        if not multi:
+            merged_params["universe_list"] = body.universe_list
 
         cfg = StrategyConfig(
             name=body.name,
@@ -140,7 +151,8 @@ def create_auto_portfolio(body: CreateAutoBody, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(cfg)
         db.refresh(account)
-        auto_portfolio.start_preparation(body.universe_list)
+        strategy = auto_portfolio.make_strategy(cfg)
+        auto_portfolio.start_preparation(auto_portfolio.strategy_symbols(db, strategy))
         return _config_dict(db, cfg, account)
     except Exception as exc:
         db.rollback()

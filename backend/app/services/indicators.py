@@ -130,6 +130,30 @@ def rsi(closes: list[float], period: int = 2) -> float | None:
     return 100.0 - 100.0 / (1.0 + rs)
 
 
+def rsi_series(closes: list[float], period: int = 2) -> list[float | None]:
+    """RSI di Wilder per ogni giorno (stesso calcolo di `rsi`, ma tutta la serie in una passata)."""
+    out: list[float | None] = [None] * len(closes)
+    if len(closes) < period + 2:
+        return out
+    gains = [max(closes[i] - closes[i - 1], 0.0) for i in range(1, len(closes))]
+    losses = [max(closes[i - 1] - closes[i], 0.0) for i in range(1, len(closes))]
+    avg_g = sum(gains[:period]) / period
+    avg_l = sum(losses[:period]) / period
+    for k in range(period, len(gains)):
+        avg_g = (avg_g * (period - 1) + gains[k]) / period
+        avg_l = (avg_l * (period - 1) + losses[k]) / period
+        out[k + 1] = 100.0 if avg_l == 0 else 100.0 - 100.0 / (1.0 + avg_g / avg_l)
+    return out
+
+
+def prefix_sums(values: list[float]) -> list[float]:
+    """Somme cumulate: la media di values[a:b] è (p[b] - p[a]) / (b - a)."""
+    out = [0.0]
+    for v in values:
+        out.append(out[-1] + v)
+    return out
+
+
 # ── ATR ───────────────────────────────────────────────────────────────────────
 
 def atr(highs: list[float], lows: list[float], closes: list[float], period: int = 20) -> float | None:

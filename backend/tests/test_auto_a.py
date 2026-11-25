@@ -191,6 +191,13 @@ class FakeContext(StrategyContext):
     def history_count(self, symbol):
         return sum(1 for r in self._rows.get(symbol, []) if r.date <= self.today)
 
+    def closes(self, symbol):
+        rows = self._rows.get(symbol, [])
+        return [r.date for r in rows], [r.close for r in rows], self.history_count(symbol) - 1
+
+    def entry_date(self, symbol):
+        return None
+
 
 def _rows(n_days, start_price, drift, start_date):
     from app.services.price_history import DayRow
@@ -308,7 +315,7 @@ TODAY = date(2025, 3, 12)
 def no_background(monkeypatch):
     """Nei test la preparazione dati non deve avviare thread né scaricare da internet."""
     started = []
-    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda name: started.append(name) or True)
+    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss: started.append(ss.key) or True)
     monkeypatch.setattr(auto_portfolio, "fetch_many", lambda db, symbols: {})
     return started
 

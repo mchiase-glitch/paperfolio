@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { closeSheet, openSheet, toast } from "../app.js";
 import { cls, date, esc, money, num, pct, price } from "../format.js";
 import { historyChart } from "./portfolio.js";
-import { strategyTitle, universeLabel } from "./auto.js";
+import { listsLabel, strategyTitle } from "./auto.js";
 
 const SIDE_LABELS = { buy: "Acquisto", sell: "Vendita", dividend: "Dividendo", stamp: "Bollo" };
 const SIDE_CLS = { buy: "pos", sell: "neg", dividend: "", stamp: "muted" };
@@ -106,7 +106,7 @@ function progressCard(run) {
 function header(run) {
   return `<section class="card">
     <h2>${esc(run.config_name || run.strategy_type)}</h2>
-    <div class="small muted">${esc(strategyTitle(run.strategy_type))} · ${esc(universeLabel(run.params.universe_list))}</div>
+    <div class="small muted">${esc(strategyTitle(run.strategy_type))} · ${esc(listsLabel({ params: run.params, universe_lists: run.universe_lists }))}</div>
     <div class="small muted">Dal ${date(run.start)} al ${date(run.end)} · capitale ${money(run.initial_capital, "EUR", 0)}
       ${run.split ? ` · verifica dal ${date(run.split)}` : ""}</div>
   </section>`;
@@ -161,7 +161,7 @@ function metricsBlock(block, benchLabel, period) {
   return `<h2>${PERIOD_LABELS[period]}</h2>
     <div class="small muted">${date(s.start)} – ${date(s.end)}${period !== "in_sample" ? " · al netto delle imposte che pagheresti vendendo tutto alla fine" : ""}</div>
     <div class="scroll-x"><table class="data-table small" style="margin-top:6px">
-      <thead><tr><th></th><th class="num">Strategia</th><th class="num">${esc(benchLabel || "Indice")}</th></tr></thead>
+      <thead><tr><th></th><th class="num">Strategia</th><th class="num">${esc(benchLabel?.startsWith("Media") ? "Media indici" : benchLabel || "Indice")}</th></tr></thead>
       <tbody>
         ${row("Rendimento annuo", "medio composto", `<b class="${cls(s.cagr)}">${ratio(s.cagr)}</b>`, ratio(b.cagr))}
         ${row("Rendimento totale", "su tutto il periodo", ratio(s.total_return, 1), ratio(b.total_return, 1))}

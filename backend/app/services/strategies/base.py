@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -56,6 +57,10 @@ class UniversePrice:
     price: Decimal
     currency: str
     available: bool  # False se il prezzo non è disponibile
+    market: str | None = None        # ITA / EUR / USA: borsa di quotazione
+    groups: tuple[str, ...] = ()     # liste di universo che contengono il titolo
+    instrument_type: str = "stock"
+    listing_currency: str = "EUR"    # valuta in cui è quotato (i prezzi storici sono in questa valuta)
 
 
 class StrategyContext(ABC):
@@ -78,6 +83,26 @@ class StrategyContext(ABC):
     @abstractmethod
     def history_count(self, symbol: str) -> int:
         """Numero di giorni di storico disponibili fino a `today`."""
+
+    @abstractmethod
+    def closes(self, symbol: str) -> tuple[list[date], list[float], int]:
+        """(date, chiusure, i): si possono leggere solo le posizioni 0..i (i = ultimo giorno ≤ today, -1 se nessuno).
+
+        Le liste possono essere più lunghe (nel backtest contengono il futuro): restituirle intere evita
+        di copiarle ogni giorno, e le strategie possono tenere in memoria indicatori calcolati una volta.
+        """
+
+    @abstractmethod
+    def entry_date(self, symbol: str) -> date | None:
+        """Giorno in cui è stata aperta la posizione attuale sul titolo (None se non posseduto)."""
+
+    def held_days(self, symbol: str) -> int:
+        """Giorni di borsa trascorsi dall'apertura della posizione (il giorno dell'acquisto non conta)."""
+        entry = self.entry_date(symbol)
+        if entry is None:
+            return 0
+        dates, _, i = self.closes(symbol)
+        return max(0, i - bisect_right(dates, entry) + 1)
 
 
 class BaseStrategy(ABC):
@@ -112,6 +137,21 @@ class BaseStrategy(ABC):
         Genera le decisioni (buy/sell/hold/skip) per ogni titolo dell'universo.
         Non piazza ordini: si limita a restituire le decisioni.
         """
+
+    # ── Universo ──────────────────────────────────────────────────────────────
+
+    def universe_lists(self) -> list[str]:
+        """Liste di universo i cui titoli la strategia può comprare."""
+        name = self.params.get("universe_list")
+        return [name] if name else []
+
+    def extra_tradeable(self) -> list[str]:
+        """Altri strumenti negoziabili fuori dalle liste (es. gli ETF di P3)."""
+        return []
+
+    def reference_symbols(self) -> list[str]:
+        """Serie solo da leggere (indici, cambi): servono ai segnali, non si comprano."""
+        return []
 
     # ── Helpers condivisi ─────────────────────────────────────────────────────
 

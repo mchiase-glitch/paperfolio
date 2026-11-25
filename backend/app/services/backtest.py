@@ -39,6 +39,7 @@ from .money import ZERO, eur
 from .price_history import DayRow, fetch_history
 from .strategies import STRATEGY_CLASSES, STRATEGY_VERSIONS
 from .strategies.base import BaseStrategy, StrategyContext, UniversePrice
+from .strategies.common import REGIONS
 from .tax import LossLot, compute_sale_tax, days_in_year
 
 log = logging.getLogger("paperfolio.backtest")
@@ -106,6 +107,7 @@ class Series:
     def __init__(self, rows: list[DayRow]):
         self.rows = rows
         self.dates = [r.date for r in rows]
+        self.closes = [r.close for r in rows]
 
     def idx_le(self, d: date) -> int:
         return bisect_right(self.dates, d) - 1
@@ -128,6 +130,7 @@ class Holding:
     qty: Decimal = ZERO
     cost_gross: Decimal = ZERO   # solo prezzo, in EUR
     cost_fiscal: Decimal = ZERO  # prezzo + commissioni di acquisto
+    opened: date | None = None   # giorno dell'acquisto che ha aperto la posizione
 
 
 @dataclass
@@ -210,13 +213,25 @@ class BacktestContext(StrategyContext):
         s = self.engine.series.get(symbol)
         return s.idx_le(self.today) + 1 if s else 0
 
+    def closes(self, symbol: str) -> tuple[list[date], list[float], int]:
+        s = self.engine.series.get(symbol)
+        if s is None:
+            return [], [], -1
+        return s.dates, s.closes, s.idx_le(self.today)
+
+    def entry_date(self, symbol: str) -> date | None:
+        h = self.engine.holdings.get(symbol)
+        return h.opened if h and h.qty > 0 else None
+
 
 class BacktestEngine:
     def __init__(self, strategy: BaseStrategy, symbols: list[str], instruments: dict[str, InstrumentInfo],
                  series: dict[str, Series], fx: dict[str, Series], costs: Costs, start: date, end: date,
-                 capital: Decimal, progress: Callable[[int], None] | None = None):
+                 capital: Decimal, progress: Callable[[int], None] | None = None,
+                 groups: dict[str, tuple[str, ...]] | None = None):
         self.strategy = strategy
-        self.symbols = symbols
+        self.symbols = symbols  # negoziabili; `series` contiene anche indici e cambi letti dai segnali
+        self.groups = groups or {}
         self.instruments = instruments
         self.series = series
         self.fx = fx
@@ -342,7 +357,11 @@ class BacktestEngine:
             price = self.price_eur(sym, d)
             ok = (price is not None and price > 0 and info is not None
                   and (info.type, info.market) in self.costs.commissions)
-            ups.append(UniversePrice(sym, None, price if ok else ZERO, "EUR", ok))
+            meta = {}
+            if info is not None:
+                meta = dict(market=info.market, instrument_type=info.type, listing_currency=info.currency)
+            ups.append(UniversePrice(sym, None, price if ok else ZERO, "EUR", ok,
+                                     groups=self.groups.get(sym, ()), **meta))
         decisions = self.strategy.generate_decisions(BacktestContext(self, d), ups, braking)
 
         prices = {up.symbol: up.price for up in ups if up.available}
@@ -410,6 +429,8 @@ class BacktestEngine:
         net = gross + comm + tobin
         self.cash -= net
         h = self.holdings.setdefault(order.symbol, Holding())
+        if h.qty <= 0:
+            h.opened = d
         h.qty += qty
         h.cost_gross += gross
         h.cost_fiscal += gross + comm
@@ -538,6 +559,19 @@ def benchmark_curve(bench: Series | None, bench_fx: Series | None, cal: list[dat
     return out
 
 
+def blended_benchmark(parts: list[tuple[Series | None, Series | None]], cal: list[date],
+                      capital: float) -> list[tuple[date, float]]:
+    """Capitale diviso in parti uguali tra gli indici il primo giorno in cui ci sono tutti, poi lasciato correre."""
+    curves = [dict(benchmark_curve(b, f, cal, 1.0)) for b, f in parts if b is not None]
+    if not curves or len(curves) < len(parts):
+        return []
+    days = [d for d in cal if all(d in c for c in curves)]
+    if not days:
+        return []
+    first = days[0]
+    return [(d, capital * sum(c[d] / c[first] for c in curves) / len(curves)) for d in days]
+
+
 def build_results(res: EngineResult, bench: list[tuple[date, float]], bench_label: str | None,
                   capital: Decimal, split: date | None, risk_free: float) -> dict:
     curve = res.curve
@@ -633,18 +667,30 @@ def warnings_for(db: Session, run: BacktestRun, symbols_missing: list[str]) -> l
     return out
 
 
+def benchmarks_for(strategy: BaseStrategy) -> tuple[list[tuple[str, str]], str]:
+    """Indici di confronto [(simbolo, valuta)] ed etichetta: quello della lista, oppure la media dei tre."""
+    lists = strategy.universe_lists()
+    if len(lists) == 1 and lists[0] in BENCHMARKS and not strategy.extra_tradeable():
+        sym, label, ccy = BENCHMARKS[lists[0]]
+        return [(sym, ccy)], label
+    return ([(r.index, r.currency) for r in REGIONS.values()],
+            "Media " + ", ".join(r.label for r in REGIONS.values()))
+
+
 def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
     """Esegue un backtest già registrato e ne salva risultati e operazioni."""
-    from .universes import get_symbols
+    from .auto_portfolio import strategy_symbols
     params = json.loads(run.params_json)
-    universe_list = params.get("universe_list", "")
-    symbols = get_symbols(db, [universe_list])
-    bench_sym, bench_label, bench_ccy = BENCHMARKS.get(universe_list, (None, None, "EUR"))
+    strategy = STRATEGY_CLASSES[run.strategy_type](None, params)
+    ss = strategy_symbols(db, strategy)
+    symbols = ss.tradeable
+    bench_specs, bench_label = benchmarks_for(strategy)
 
     instruments = {i.symbol: InstrumentInfo(i.symbol, i.type, i.market, i.country, i.currency, i.fiscal_category)
                    for i in db.scalars(select(Instrument).where(Instrument.symbol.in_(symbols)))}
-    currencies = {i.currency for i in instruments.values()} | {bench_ccy}
-    extra = [fx_symbol(c) for c in currencies if c != "EUR"] + ([bench_sym] if bench_sym else [])
+    currencies = {i.currency for i in instruments.values()} | {ccy for _, ccy in bench_specs}
+    extra = list(dict.fromkeys([fx_symbol(c) for c in currencies if c != "EUR"] + [s for s, _ in bench_specs]
+                               + ss.reference))
     if fetch:
         for sym in extra:
             try:
@@ -663,10 +709,15 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
     if len(series) < 0.75 * len(symbols):
         raise ValueError(f"Dati storici disponibili solo per {len(series)} titoli su {len(symbols)}: "
                          "apri il portafoglio e attendi la preparazione dei dati.")
-    fx = {c: load_series(db, fx_symbol(c), load_from, run.end_date) for c in currencies if c != "EUR"}
-    fx = {c: s for c, s in fx.items() if s is not None}
+    for sym in extra:
+        s = load_series(db, sym, load_from, run.end_date)
+        if s is not None:
+            series[sym] = s
+    missing_ref = [s for s in ss.reference if s not in series]
+    if missing_ref:
+        raise ValueError(f"Mancano i dati di {', '.join(missing_ref)}, necessari ai segnali della strategia.")
+    fx = {c: series[fx_symbol(c)] for c in currencies if c != "EUR" and fx_symbol(c) in series}
 
-    strategy = STRATEGY_CLASSES[run.strategy_type](None, params)
     last = {"pct": 0}
 
     def progress(pct: int) -> None:
@@ -676,11 +727,11 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
             db.commit()
 
     engine = BacktestEngine(strategy, symbols, instruments, series, fx, load_costs(db),
-                            run.start_date, run.end_date, run.initial_capital, progress)
+                            run.start_date, run.end_date, run.initial_capital, progress, ss.groups)
     res = engine.run()
     cal = [d for d, _ in res.curve]
-    bench = benchmark_curve(load_series(db, bench_sym, load_from, run.end_date) if bench_sym else None,
-                            fx.get(bench_ccy) if bench_ccy != "EUR" else None, cal, float(run.initial_capital))
+    bench = blended_benchmark([(series.get(sym), fx.get(ccy) if ccy != "EUR" else None) for sym, ccy in bench_specs],
+                              cal, float(run.initial_capital))
     results = build_results(res, bench, bench_label, run.initial_capital, run.split_date,
                             float(params.get("risk_free", 0.02)))
     results["warnings"] = warnings_for(db, run, missing)

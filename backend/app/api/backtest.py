@@ -35,7 +35,10 @@ class BacktestBody(BaseModel):
 
 
 def _run_dict(run: BacktestRun, with_results: bool = False) -> dict:
+    params = json.loads(run.params_json)
+    cls = backtest_svc.STRATEGY_CLASSES.get(run.strategy_type)
     out = {
+        "universe_lists": cls(None, params).universe_lists() if cls else [],
         "id": run.id,
         "config_id": run.strategy_config_id,
         "strategy_type": run.strategy_type,
