@@ -154,11 +154,14 @@ def run_strategy(
     if is_dry_run and not strategy.should_run_today(db, today):
         note = "Simulazione: nell'esecuzione reale questa strategia opera solo l'ultimo giorno di borsa del mese."
 
-    # ── Passo 3b: Drawdown brake ─────────────────────────────────────────────
-    drawdown_braking = _update_drawdown_brake(db, config, account, bool(config.is_drawdown_braking), today)
-
     # ── Prezzi correnti dell'universo (in EUR) ───────────────────────────────
     universe_prices = _build_universe_prices(db, symbols, today)
+    price_map = {up.symbol: up for up in universe_prices}
+    total = positions_svc.cash_balance(db, account.id) + _portfolio_value(db, account.id, price_map)
+
+    # ── Passo 3b: Drawdown brake (sul valore attuale, non sulla valorizzazione salvata) ──
+    drawdown_braking = _update_drawdown_brake(
+        db, config, account, bool(config.is_drawdown_braking), today, current=total)
 
     # ── Passo 2: Segnale (delegato alla strategia) ───────────────────────────
     decisions = strategy.generate_decisions(db, account, universe_prices, drawdown_braking, now)
@@ -170,8 +173,6 @@ def run_strategy(
     # ── Passo 4+5: Sizing e ordini (prima le vendite, che liberano liquidità) ──
     outcomes: dict[str, tuple[int | None, str | None]] = {}
     if not is_dry_run:
-        price_map = {up.symbol: up for up in universe_prices}
-        total = positions_svc.cash_balance(db, account.id) + _portfolio_value(db, account.id, price_map)
         for side in ("sell", "buy"):
             for dec in decisions:
                 if dec.action == side and dec.symbol in price_map:
@@ -195,6 +196,16 @@ def run_strategy(
             order_id=order_id,
         ))
     db.commit()
+
+    # Valorizzazione aggiornata dopo gli acquisti/vendite (grafico del valore e freno drawdown)
+    if orders_placed:
+        from . import portfolio as portfolio_svc
+        try:
+            portfolio_svc.snapshot(db, account, now)
+        except Exception:  # noqa: BLE001 - la valorizzazione serale la riscrive comunque
+            db.rollback()
+            log.exception("Valorizzazione dopo esecuzione fallita per %s", config.name)
+
     log.info("Strategia %s (%s) ok: %d decisioni, %d ordini", config.name, config.strategy_type,
              len(decisions), orders_placed)
     return {
@@ -407,11 +418,18 @@ def _portfolio_value(db: Session, account_id: int, price_map: dict) -> Decimal:
     return total
 
 
-def _equity_series(db: Session, account: Account) -> list[Decimal]:
-    """Valore complessivo (posizioni + liquidità) a fine giornata per ogni valorizzazione salvata."""
-    rows = db.scalars(
-        select(DailyValuation).where(DailyValuation.account_id == account.id).order_by(DailyValuation.day)
-    ).all()
+def _equity_series(
+    db: Session, account: Account, today: date | None = None, current: Decimal | None = None,
+) -> list[Decimal]:
+    """Valore complessivo (posizioni + liquidità) a fine giornata per ogni valorizzazione salvata.
+
+    Con `current` il valore di oggi è quello attuale, non la valorizzazione salvata: quella può
+    essere stata scritta prima degli acquisti di oggi (posizioni a zero, liquidità già spesa).
+    """
+    q = select(DailyValuation).where(DailyValuation.account_id == account.id)
+    if current is not None and today is not None:
+        q = q.where(DailyValuation.day < today)
+    rows = db.scalars(q.order_by(DailyValuation.day)).all()
     entries = db.scalars(
         select(LedgerEntry).where(LedgerEntry.account_id == account.id).order_by(LedgerEntry.ts, LedgerEntry.id)
     ).all()
@@ -421,18 +439,20 @@ def _equity_series(db: Session, account: Account) -> list[Decimal]:
             cash += entries[i].cash_delta_eur
             i += 1
         series.append(r.positions_value_eur + cash)
+    if current is not None:
+        series.append(current)
     return series
 
 
 def _update_drawdown_brake(
     db: Session, config: StrategyConfig, account: Account,
-    currently_braking: bool, today: date,
+    currently_braking: bool, today: date, current: Decimal | None = None,
 ) -> bool:
     """
     Drawdown del valore complessivo dal massimo storico.
     Attiva il freno a -20%, lo disattiva a -10%.
     """
-    series = _equity_series(db, account)
+    series = _equity_series(db, account, today, current)
     if not series:
         return currently_braking
     max_val = max(series)

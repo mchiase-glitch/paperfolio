@@ -116,8 +116,8 @@ async function openNewForm(onSuccess) {
         <div class="form-group">
           <label>Tipo strategia</label>
           <select name="strategy_type" id="sel-strategy-type" required>
-            <option value="P1">P1 – Buy &amp; Hold con ribilanciamento</option>
-            <option value="P2">P2 – Faber Trend (10 mesi)</option>
+            <option value="P1">P1 – Compra e tieni con ribilanciamento</option>
+            <option value="P2">P2 – Segue la tendenza (Faber)</option>
           </select>
         </div>
         <div class="form-group">
@@ -132,13 +132,13 @@ async function openNewForm(onSuccess) {
         </div>
         <div id="params-p1">
           <div class="form-group">
-            <label>Banda ribilanciamento (es. 0.25 = ±25%)</label>
+            <label>Tolleranza prima di ribilanciare (0.25 = 25%)</label>
             <input type="number" name="rebalance_band" min="0.05" max="0.5" step="0.05" value="0.25">
           </div>
         </div>
         <div id="params-p2" style="display:none">
           <div class="form-group">
-            <label>Mesi SMA (default 10)</label>
+            <label>Mesi della media (di solito 10)</label>
             <input type="number" name="sma_months" min="3" max="24" step="1" value="10">
           </div>
         </div>
@@ -206,6 +206,48 @@ async function openNewForm(onSuccess) {
   });
 }
 
+// ── Descrizioni in italiano ───────────────────────────────────────────────────
+
+const UNIVERSE_LABELS = { ftse_mib: "FTSE MIB", eurostoxx50: "Euro Stoxx 50", sp100: "S&P 100" };
+
+export function universeLabel(name) {
+  return UNIVERSE_LABELS[name] || name || "";
+}
+
+export function strategyTitle(type) {
+  if (type === "P1") return "P1 – Compra e tieni con ribilanciamento";
+  if (type === "P2") return "P2 – Segue la tendenza (Faber)";
+  return type;
+}
+
+export function strategyDescription(cfg) {
+  const p = cfg.params || {};
+  if (cfg.strategy_type === "P1") {
+    const band = Math.round((p.rebalance_band ?? 0.25) * 100);
+    return `Divide il capitale in parti uguali su tutti i titoli dell'elenco. Ogni giorno di borsa controlla i pesi: se un titolo si allontana più del ${band}% dalla sua quota, compra o vende per riportarlo in linea.`;
+  }
+  if (cfg.strategy_type === "P2") {
+    const m = p.sma_months ?? 10;
+    return `Una volta al mese, a fine mese, confronta il prezzo di ogni titolo con la sua media degli ultimi ${m} mesi: se è sopra lo tiene o lo compra (parti uguali), se è sotto lo vende e resta in liquidità.`;
+  }
+  return "";
+}
+
+// Parametri tecnici → righe leggibili [etichetta, valore]
+export function readableParams(cfg) {
+  const p = cfg.params || {};
+  const rows = [];
+  if (p.universe_list) rows.push(["Elenco titoli", universeLabel(p.universe_list)]);
+  if (p.rebalance_band != null) rows.push(["Tolleranza", `${Math.round(p.rebalance_band * 100)}%`]);
+  if (p.sma_months != null) rows.push(["Media su", `${p.sma_months} mesi`]);
+  if (p.min_history_days != null) rows.push(["Storico minimo", `${p.min_history_days} giorni`]);
+  const known = ["universe_list", "rebalance_band", "sma_months", "min_history_days"];
+  for (const [k, v] of Object.entries(p)) {
+    if (!known.includes(k)) rows.push([k, String(v)]);
+  }
+  return rows;
+}
+
 // ── Card portafoglio ──────────────────────────────────────────────────────────
 
 export function dataLine(cfg) {
@@ -238,10 +280,11 @@ function configCard(cfg) {
       <div class="card-row">
         <div>
           <h3>${esc(cfg.name)}</h3>
-          <div class="small muted">${esc(cfg.strategy_type)} · ${esc(cfg.params?.universe_list || "")}</div>
+          <div class="small muted">${esc(strategyTitle(cfg.strategy_type))} · ${esc(universeLabel(cfg.params?.universe_list))}</div>
         </div>
         ${statusLabel}
       </div>
+      <p class="small" style="margin-top:.4rem">${esc(strategyDescription(cfg))}</p>
       <div class="grid2" style="margin-top:.5rem">
         ${cashLine}
         ${statusLine}

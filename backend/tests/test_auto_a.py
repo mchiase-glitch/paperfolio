@@ -453,6 +453,26 @@ def test_selling_into_cash_is_not_a_drawdown(db):
                                                  today=date(2025, 3, 12)) is False
 
 
+def test_buying_today_with_stale_valuation_is_not_a_drawdown(db):
+    """Valorizzazione di oggi scritta prima degli acquisti (posizioni 0, liquidità spesa): niente freno."""
+    from app.models import DailyValuation, LedgerEntry
+    cfg = _make_config(db)
+    cfg.is_drawdown_braking = 1  # rimasto acceso per l'errore
+    acc = _make_account(db, cfg, cash="100000")
+    db.add(LedgerEntry(account_id=acc.id, ts=utc(2025, 3, 12, 16, 0), kind="buy", cash_delta_eur=D("-95000")))
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 11), positions_value_eur=D("0")))
+    db.add(DailyValuation(account_id=acc.id, day=date(2025, 3, 12), positions_value_eur=D("0")))
+    db.commit()
+
+    # Senza valore attuale la serie direbbe 100000 → 5000 (-95%)
+    assert auto_portfolio._update_drawdown_brake(db, cfg, acc, currently_braking=False,
+                                                 today=date(2025, 3, 12)) is True
+    # Con il valore attuale (5000 liquidità + 95000 titoli) il freno si spegne
+    assert auto_portfolio._update_drawdown_brake(db, cfg, acc, currently_braking=True,
+                                                 today=date(2025, 3, 12), current=D("100000")) is False
+    assert cfg.is_drawdown_braking == 0
+
+
 # ── Interruttore di sicurezza ─────────────────────────────────────────────────
 
 def test_safety_switch_skips_when_no_data(db, no_background):

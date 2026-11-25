@@ -4,7 +4,7 @@
  */
 import { api } from "../api.js";
 import { esc, dateTime, money } from "../format.js";
-import { dataLine, pollWhilePreparing } from "./auto.js";
+import { dataLine, pollWhilePreparing, readableParams, strategyDescription, strategyTitle } from "./auto.js";
 
 const ACTION_LABELS = { buy: "Acquisto", sell: "Vendita", hold: "Mantieni", skip: "Skip" };
 const ACTION_CLS = { buy: "pos", sell: "neg", hold: "muted", skip: "muted" };
@@ -54,9 +54,8 @@ function headerCard(cfg) {
     ? '<span class="badge badge-warn">Freno drawdown attivo</span>'
     : '<span class="badge badge-ok">Attivo</span>';
 
-  const params = cfg.params || {};
-  const paramRows = Object.entries(params).map(([k, v]) =>
-    `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(String(v))}</span></div>`
+  const paramRows = readableParams(cfg).map(([k, v]) =>
+    `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`
   ).join("");
 
   return `
@@ -65,8 +64,10 @@ function headerCard(cfg) {
         <h2>${esc(cfg.name)}</h2>
         ${statusLabel}
       </div>
+      <div class="small muted">${esc(strategyTitle(cfg.strategy_type))}</div>
+      <p class="small" style="margin-top:.4rem">${esc(strategyDescription(cfg))}</p>
+      ${cfg.is_drawdown_braking ? `<p class="small" style="margin-top:.4rem"><strong>Freno drawdown:</strong> il valore del portafoglio è sceso oltre il 20% dal suo massimo, quindi non fa nuovi acquisti (può solo vendere). Si spegne quando la perdita torna sotto il 10%.</p>` : ""}
       <div class="grid2" style="margin-top:.5rem">
-        <div class="kv"><span class="k">Strategia</span><span class="v">${esc(cfg.strategy_type)}</span></div>
         ${cfg.cash_balance != null ? `<div class="kv"><span class="k">Liquidità</span><span class="v">${money(cfg.cash_balance)}</span></div>` : ""}
         <div class="kv"><span class="k">Titoli in portafoglio</span><span class="v">${cfg.positions_count}</span></div>
         <div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>
