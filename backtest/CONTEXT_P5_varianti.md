@@ -97,7 +97,9 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
 
 - [x] **Fase 1:** individuare il codice (§5), rendere il freno un parametro della singola strategia, aggiungere le opzioni di esecuzione e di soglia RSI. Verificare che V0 riproduca i numeri del §2 e che le altre strategie non cambino.
   - *Chiusa il 25/11/2026.* V0 rilanciato con il codice nuovo: 50.459,29 €, identico al §2. P1 (FTSE MIB, S&P 100), P2 (FTSE MIB, Euro Stoxx 50, S&P 100), P3, P4 e P7 danno esattamente gli stessi numeri di prima: valore finale, operazioni, costi, imposte e giorni di freno. Il confronto è stato fatto sugli stessi dati in cache, senza scaricare nulla.
-- [ ] **Fase 2:** lanciare V0–V5 negli scenari C-attuale e C-basso (12 backtest) e generare i report del §8.
+- [x] **Fase 2:** lanciare V0–V5 negli scenari C-attuale e C-basso (12 backtest) e generare i report del §8.
+  - *Chiusa il 26/11/2026.* Script `backtest/p5_varianti.py` (solo dati in cache, rilanciabile con gli stessi numeri); report in `reports/p5_varianti/`, confronto in `confronto.md`.
+  - **Definizione di "lordo" e "costo per giro" nei report:** il lordo è il risultato ai prezzi di mercato; spread di cambio e slippage stanno nel costo per giro, insieme a commissioni e Tobin. Per questo il lordo medio di V0 è +0,27% e il costo per giro 0,35%, invece di +0,15% e 0,23% del §2, dove lo spread di cambio finiva nel lordo. La differenza tra lordo e costo è la stessa con le due definizioni.
 - [ ] **Fase 3:** applicare i criteri del §7 e fare il test di robustezza sulla variante migliore.
 - [ ] **Fase 4 (facoltativa):** verifica su un universo nuovo, mai usato prima (per esempio azioni STOXX 600 fuori da FTSE MIB ed Euro Stoxx 50), solo per la variante promossa.
 - [ ] **Fase 5:** decisione. Se c'è una variante promossa, va in paper trading dal vivo come **P5b**, accanto a P5, per almeno 6 mesi prima di qualsiasi altra modifica. Per V1 dal vivo serve anche spostare il controllo vicino alla chiusura: circa 17:20 per Milano ed Europa, circa 21:45 per gli USA.
@@ -110,6 +112,18 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
 |---|---|---|---|---|---|---|
 | 25/11/2026 | V0 | C-attuale | −0,4% | −7,9% | −60% | punto di riferimento |
 | 25/11/2026 | V0 | C-attuale | −0,4% | −7,9% | −60% | rilancio dopo la fase 1: identico (50.459,29 €) |
+| 26/11/2026 | V0 | C-attuale | −0,4% | −7,9% | −60,0% | fase 2 |
+| 26/11/2026 | V0 | C-basso | +11,2% | +1,7% | −30,3% | fase 2 |
+| 26/11/2026 | V1 | C-attuale | −3,1% | −6,2% | −63,4% | fase 2, slippage 0,05% per lato |
+| 26/11/2026 | V1 | C-basso | +8,6% | +3,4% | −26,7% | fase 2, slippage 0,05% per lato |
+| 26/11/2026 | V2 | C-attuale | +0,9% | −7,2% | −56,8% | fase 2 |
+| 26/11/2026 | V2 | C-basso | +11,2% | +3,4% | −33,4% | fase 2 |
+| 26/11/2026 | V3 | C-attuale | −0,1% | −13,9% | −76,2% | fase 2 |
+| 26/11/2026 | V3 | C-basso | +13,4% | +3,1% | −46,0% | fase 2 |
+| 26/11/2026 | V4 | C-attuale | +3,2% | −8,5% | −61,1% | fase 2 |
+| 26/11/2026 | V4 | C-basso | +13,1% | −1,2% | −27,3% | fase 2 |
+| 26/11/2026 | V5 | C-attuale | +1,6% | −5,5% | −59,4% | fase 2, slippage 0,05% per lato |
+| 26/11/2026 | V5 | C-basso | +13,2% | +6,9% | −44,3% | fase 2, slippage 0,05% per lato |
 
 ## 11. Promemoria
 
