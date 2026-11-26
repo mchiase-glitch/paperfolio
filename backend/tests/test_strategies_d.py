@@ -164,9 +164,84 @@ def test_p7_yearly_rebalance_of_shares():
     assert s.state["rebalanced_year"] == TODAY.year
 
 
+def test_min_order_skips_small_rebalancing_only():
+    m = D("2500")
+    # Ribilanciamento di 100 azioni a 10 € = 1.000 €: sotto il minimo, non si fa
+    qty, err = order_quantity("buy", D("0.5"), D("390"), D("390"), D("10"), D("10000"), m)
+    assert qty == 0 and "ordine minimo" in err
+    qty, err = order_quantity("sell", D("0.3"), D("400"), D("400"), D("10"), D("10000"), m)
+    assert qty == 0 and "ordine minimo" in err
+    # Posizione nuova e vendita totale si fanno sempre, anche se piccole
+    assert order_quantity("buy", D("0.1"), D("0"), D("0"), D("10"), D("10000"), m)[0] == 98
+    assert order_quantity("sell", D("0"), D("50"), D("50"), D("10"), D("10000"), m)[0] == 50
+    # Sopra la soglia il ribilanciamento parte
+    assert order_quantity("buy", D("0.5"), D("100"), D("100"), D("10"), D("10000"), m)[0] == 390
+
+
+def test_edit_and_reset_params_via_api(provider, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.services import auto_portfolio
+    monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss, *a: True)
+    with TestClient(app) as client:
+        cfg = client.post("/api/auto", json={"name": "Mix", "strategy_type": "P7", "initial_capital": 50000}).json()
+        assert cfg["defaults"]["min_order"] == 2500 and cfg["defaults"]["drawdown_brake"] is True
+        url = f"/api/auto/{cfg['id']}/params"
+        r = client.patch(url, json={"params": {"max_weight": 0.15, "min_order": 1000, "drawdown_brake": False},
+                                    "sleeve_shares": [3, 1]})
+        assert r.status_code == 200, r.text
+        p = r.json()["params"]
+        assert p["max_weight"] == 0.15 and p["min_order"] == 1000 and p["drawdown_brake"] is False
+        assert [s["share"] for s in p["sleeves"]] == [0.75, 0.25]
+        assert client.patch(url, json={"params": {"max_weight": 2}}).status_code == 400
+        assert client.patch(url, json={"params": {"universe_list": "sp100"}}).status_code == 400
+        assert client.patch(url, json={"sleeve_shares": [1]}).status_code == 400
+        p = client.patch(url, json={"reset": True}).json()["params"]
+        assert p["max_weight"] == 0.10 and p["min_order"] == 2500 and p["drawdown_brake"] is True
+        assert [s["share"] for s in p["sleeves"]] == [0.5, 0.5]
+        assert [s["type"] for s in p["sleeves"]] == ["P2", "P4"]
+
+
+def test_next_check_skips_done_periods_and_pause(db, account):
+    import json
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+    from app.models import StrategyConfig, StrategyRun
+    from app.services import auto_portfolio
+    rome = ZoneInfo("Europe/Rome")
+    now = datetime(2025, 3, 3, 18, 0, tzinfo=rome)  # lunedì, dopo il controllo delle 17
+
+    def cfg(stype, params):
+        c = StrategyConfig(name=stype, strategy_type=stype, params_json=json.dumps(params), is_paused=0)
+        db.add(c)
+        db.commit()
+        return c, auto_portfolio.make_strategy(c)
+
+    def at(c, s):
+        return auto_portfolio.next_check(db, c, s, now).astimezone(rome).replace(tzinfo=None)
+
+    c5, s5 = cfg("P5", {})
+    assert at(c5, s5) == datetime(2025, 3, 4, 17, 0)
+    db.add(StrategyRun(strategy_config_id=c5.id, account_id=account.id, run_key=s5.run_key(date(2025, 3, 4)),
+                       status="ok", is_dry_run=0))
+    db.commit()
+    assert at(c5, s5) == datetime(2025, 3, 5, 17, 0)
+    c2, s2 = cfg("P2", {"universe_list": "ftse_mib"})
+    assert at(c2, s2) == datetime(2025, 3, 31, 17, 0)  # ultimo giorno di borsa del mese
+    c1, s1 = cfg("P1", {"universe_list": "sp100"})
+    assert at(c1, s1) == datetime(2025, 3, 3, 21, 30)  # solo USA: controllo serale, oggi
+    c1.is_paused = 1
+    assert auto_portfolio.next_check(db, c1, s1, now) is None
+
+
+def test_min_order_is_a_common_parameter():
+    assert P6ValueQuality(None, {}).min_order == D("2500")
+    assert P6ValueQuality(None, {"min_order": 0}).min_order == 0
+
+
 def test_p7_default_sleeves_and_union_of_universes():
     s = P7Combined(None, {})
-    assert [n for n, _, _ in s.sleeves] == ["P2", "P4", "P5"]
+    assert [n for n, _, _ in s.sleeves] == ["P2", "P4"]
     assert set(s.universe_lists()) == {"ftse_mib", "eurostoxx50", "sp100"}
     assert s.backtest_unavailable is None
     with_p6 = P7Combined(None, {"sleeves": [{"type": "P1", "params": {"universe_list": "ftse_mib"}},

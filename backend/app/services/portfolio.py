@@ -142,6 +142,17 @@ def value_history(db: Session, account: Account, now: datetime | None = None) ->
     return out
 
 
+def last_valuation(db: Session, account: Account) -> tuple[date, Decimal]:
+    """Ultimo valore totale salvato (controvalore della sera + liquidità di quel giorno), senza chiedere prezzi.
+    Senza valorizzazioni: il capitale iniziale al giorno di apertura."""
+    row = db.scalar(select(DailyValuation).where(DailyValuation.account_id == account.id)
+                    .order_by(DailyValuation.day.desc()).limit(1))
+    if row is None:
+        return rome_date(account.created_at), eur(account.initial_capital)
+    cash = sum((e.cash_delta_eur for e in positions.ledger(db, account.id) if rome_date(e.ts) <= row.day), ZERO)
+    return row.day, eur(row.positions_value_eur + cash)
+
+
 def _stamp_start(db: Session, account: Account, year: int) -> date:
     return max(date(year, 1, 1), rome_date(account.created_at))
 

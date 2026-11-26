@@ -275,11 +275,11 @@ def run_strategy(
 
     # ── Passo 4+5: Sizing e ordini (prima le vendite, che liberano liquidità) ──
     outcomes: dict[str, tuple[int | None, str | None]] = {}
-    if not is_dry_run:
-        for side in ("sell", "buy"):
-            for dec in decisions:
-                if dec.action == side and dec.symbol in price_map:
-                    outcomes[dec.symbol] = _place_order(db, account, config, dec, price_map[dec.symbol], total, now)
+    for side in ("sell", "buy"):
+        for dec in decisions:
+            if dec.action == side and dec.symbol in price_map:
+                outcomes[dec.symbol] = _place_order(db, account, config, dec, price_map[dec.symbol], total, now,
+                                                    strategy.min_order, dry_run=is_dry_run)
 
     # ── Passo 6: Registro ────────────────────────────────────────────────────
     orders_placed = 0
@@ -340,6 +340,61 @@ def recovery_run(db: Session, now: datetime | None = None) -> None:
             run_all_strategies(db, today=now_rome.date(), region=region)
 
 
+def next_check(db: Session, config: StrategyConfig, strategy: BaseStrategy,
+               now: datetime | None = None) -> datetime | None:
+    """Prossimo controllo programmato (in UTC), saltando i periodi già eseguiti. I giorni festivi di borsa non
+    sono noti: il controllo di quel giorno trova i prezzi del giorno prima e non ripete gli ordini."""
+    if config.is_paused:
+        return None
+    now_rome = (now or utcnow()).astimezone(ROME)
+    hour, minute = SCHEDULE[strategy_region(strategy)]
+    day = now_rome.date()
+    if (now_rome.hour, now_rome.minute) >= (hour, minute):
+        day += timedelta(days=1)
+    done = set(db.scalars(select(StrategyRun.run_key).where(StrategyRun.strategy_config_id == config.id,
+                                                             StrategyRun.is_dry_run == 0)))
+    for _ in range(400):
+        if day.weekday() < 5:
+            nxt = day + timedelta(days=3 if day.weekday() == 4 else 1)
+            if strategy.should_run_today(day, nxt) and strategy.run_key(day) not in done:
+                return datetime(day.year, day.month, day.day, hour, minute, tzinfo=ROME).astimezone(ZoneInfo("UTC"))
+        day += timedelta(days=1)
+    return None
+
+
+def _close_on_or_before(db: Session, symbol: str, day: date) -> float | None:
+    from ..models import PriceHistoryCache
+    v = db.scalar(select(PriceHistoryCache.close).where(PriceHistoryCache.symbol == symbol,
+                                                        PriceHistoryCache.date <= day)
+                  .order_by(PriceHistoryCache.date.desc()).limit(1))
+    return float(v) if v else None
+
+
+def live_performance(db: Session, account: Account, strategy: BaseStrategy) -> dict:
+    """Rendimento dall'apertura all'ultima valorizzazione, confrontato con l'indice di riferimento
+    (solo prezzo, in euro) nello stesso periodo. Per le strategie su più liste: media dei tre indici."""
+    from . import portfolio as portfolio_svc
+    from .backtest import benchmarks_for, fx_symbol
+    start = account.created_at.astimezone(ROME).date()
+    day, value = portfolio_svc.last_valuation(db, account)
+    out = {"since": start.isoformat(), "as_of": day.isoformat(),
+           "return": float(value / account.initial_capital - 1) if account.initial_capital else None,
+           "benchmark_return": None, "benchmark_label": None}
+    specs, label = benchmarks_for(strategy)
+    rets = []
+    for sym, ccy in specs:
+        a, b = _close_on_or_before(db, sym, start), _close_on_or_before(db, sym, day)
+        if ccy != "EUR":
+            fa, fb = _close_on_or_before(db, fx_symbol(ccy), start), _close_on_or_before(db, fx_symbol(ccy), day)
+            a, b = (a / fa if a and fa else None), (b / fb if b and fb else None)
+        if not a or not b:
+            return out
+        rets.append(b / a - 1)
+    if rets and day > start:
+        out["benchmark_return"], out["benchmark_label"] = sum(rets) / len(rets), label
+    return out
+
+
 # ── Preparazione dati in background ──────────────────────────────────────────
 
 _prep_lock = threading.Lock()
@@ -390,6 +445,16 @@ def _prepare(ss: StrategySymbols, key: str | None = None, with_fundamentals: boo
                     log.warning("Preparazione %s: %s non disponibile (%s)", key, sym, exc)
                 st["done"] += 1
                 time.sleep(FETCH_DELAY_S)
+            # Indici di confronto (rendimento rispetto all'indice nelle schede e nei backtest)
+            from .backtest import BENCHMARKS
+            from .strategies.common import REGIONS
+            for sym in dict.fromkeys([b[0] for b in BENCHMARKS.values()] + [r.index for r in REGIONS.values()]
+                                     + ["EURUSD=X"]):
+                if sym not in ss.reference:
+                    try:
+                        fetch_history(db, sym)
+                    except Exception:  # noqa: BLE001 - senza indice manca solo il confronto
+                        db.rollback()
             if with_fundamentals:
                 stale = set(fundamentals_svc.stale(db, ss.tradeable))
                 for sym in ss.tradeable:
@@ -486,9 +551,11 @@ def _build_universe_prices(db: Session, symbols: list[str], today: date,
 
 def _place_order(
     db: Session, account: Account, config: StrategyConfig, dec: Decision,
-    up: UniversePrice, total: Decimal, now: datetime,
+    up: UniversePrice, total: Decimal, now: datetime, min_order: Decimal = ZERO, dry_run: bool = False,
 ) -> tuple[int | None, str | None]:
-    """Piazza un ordine a mercato (azioni intere) con il motore ordini. Restituisce (id ordine, errore)."""
+    """Piazza un ordine a mercato (azioni intere) con il motore ordini. Restituisce (id ordine, errore).
+
+    Con dry_run calcola solo la quantità, per mostrare nella simulazione gli ordini che verrebbero scartati."""
     if not up.available or not up.instrument_id or up.price <= ZERO:
         return None, "prezzo non disponibile"
     inst = db.get(Instrument, up.instrument_id)
@@ -499,8 +566,8 @@ def _place_order(
 
     held = positions_svc.position(db, account.id, inst.id).quantity
     free = held - positions_svc.pending_sell_quantity(db, account.id, inst.id)
-    qty, err = order_quantity(dec.action, dec.target_weight, held, free, up.price, total)
-    if err:
+    qty, err = order_quantity(dec.action, dec.target_weight, held, free, up.price, total, min_order)
+    if err or dry_run:
         return None, err
     try:
         if dec.action == "buy":

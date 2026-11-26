@@ -2,7 +2,7 @@
  * Schermata "Automatici" – lista dei portafogli a gestione automatica.
  */
 import { api } from "../api.js";
-import { esc, money } from "../format.js";
+import { cls, date as fmtDate, dateTime, esc, money, pct } from "../format.js";
 
 export async function renderAuto(el) {
   const load = async () => {
@@ -177,7 +177,7 @@ async function openNewForm(onSuccess) {
           <div class="form-group">
             <label>Strategie da combinare (quote uguali)</label>
             ${["P1", "P2", "P3", "P4", "P5", "P6"].map((t) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;color:inherit">
-              <input type="checkbox" name="sleeve" value="${t}" ${["P2", "P4", "P5"].includes(t) ? "checked" : ""}> ${esc(STRATEGY_TITLES[t])}</label>`).join("")}
+              <input type="checkbox" name="sleeve" value="${t}" ${["P2", "P4"].includes(t) ? "checked" : ""}> ${esc(STRATEGY_TITLES[t])}</label>`).join("")}
           </div>
         </div>
         <div id="params-p5" style="display:none">
@@ -324,7 +324,7 @@ export function strategyDescription(cfg) {
     case "P6":
       return `Una volta l'anno, ad ${MONTHS[(p.rebalance_month ?? 4) - 1]}, mette in classifica i titoli delle tre liste (escluse banche, assicurazioni e utility) per quanto rendono gli utili rispetto al prezzo dell'azienda e per quanto è redditizio il capitale investito, e compra i ${p.n_hold ?? 15} migliori in parti uguali. Usa i bilanci più recenti: per questo non ha backtest.`;
     case "P7": {
-      const sl = (p.sleeves || []).map((s) => `${s.type} ${pc(s.share)}`).join(", ") || "P2, P4 e P5 in parti uguali";
+      const sl = (p.sleeves || []).map((s) => `${s.type} ${pc(s.share)}`).join(", ") || "P2 e P4 in parti uguali";
       return `Mette insieme più strategie, ognuna con la sua quota del capitale (${sl}). Gli ordini sullo stesso titolo si compensano, nessuna azione supera il ${pc(p.max_weight ?? 0.1)} del totale e a ${MONTHS[(p.rebalance_month ?? 1) - 1]} le quote tornano alle percentuali stabilite.`;
     }
     default:
@@ -356,11 +356,39 @@ const PARAM_LABELS = {
   exclude: ["Settori esclusi", (v) => v.map((x) => ({ banks: "banche", insurance: "assicurazioni", utilities: "utility" }[x] || x)).join(", ")],
   max_weight: ["Peso massimo per azione", (v) => pc(v)],
   sleeves: ["Strategie", (v) => v.map((s) => `${s.type} ${pc(s.share)}${s.params?.universe_list ? ` (${universeLabel(s.params.universe_list)})` : ""}`).join(", ")],
+  min_order: ["Ordine minimo per ribilanciare", (v) => money(v, "EUR", 0)],
+  drawdown_brake: ["Freno sul drawdown", (v) => (v ? "Sì" : "No")],
 };
 
-// Parametri tecnici → righe leggibili [etichetta, valore]
+export function paramLabel(key) {
+  return PARAM_LABELS[key]?.[0] || key;
+}
+
+export { MONTHS };
+
+// Righe "prossimo controllo" e "rendimento rispetto all'indice" per schede e dettaglio
+export function perfRows(cfg) {
+  const rows = [];
+  rows.push(["Prossimo controllo", cfg.is_paused ? "in pausa" : cfg.next_check ? dateTime(cfg.next_check) : "—"]);
+  const p = cfg.performance;
+  if (p && p.return != null) {
+    rows.push([`Rendimento dal ${fmtDate(p.since)}`, pct(p.return * 100), cls(p.return)]);
+    if (p.benchmark_return != null) {
+      rows.push([p.benchmark_label?.startsWith("Media") ? "Media dei tre indici" : `Indice ${p.benchmark_label}`,
+        pct(p.benchmark_return * 100), cls(p.benchmark_return)]);
+    }
+  }
+  return rows;
+}
+
+export function perfHtml(cfg) {
+  return perfRows(cfg).map(([k, v, c]) =>
+    `<div class="kv"><span class="k">${esc(k)}</span><span class="v ${c || ""}">${esc(v)}</span></div>`).join("");
+}
+
+// Parametri tecnici → righe leggibili [etichetta, valore] (i parametri comuni non salvati valgono il predefinito)
 export function readableParams(cfg) {
-  const p = cfg.params || {};
+  const p = { ...(cfg.defaults || {}), ...(cfg.params || {}) };
   const rows = [["Elenco titoli", listsLabel(cfg)]];
   for (const [k, v] of Object.entries(p)) {
     if (k === "universe_list" || k === "universe_lists" || k === "risk_free") continue;
@@ -398,7 +426,8 @@ function configCard(cfg) {
     : "";
   const statusLine = `
     <div class="kv"><span class="k">Titoli in portafoglio</span><span class="v">${cfg.positions_count}</span></div>
-    ${cfg.pending_orders ? `<div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>` : ""}`;
+    ${cfg.pending_orders ? `<div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>` : ""}
+    ${perfHtml(cfg)}`;
 
   return `
     <section class="card clickable" data-auto-id="${cfg.id}">

@@ -49,11 +49,17 @@ def brake_state(series: list[Decimal], currently_braking: bool) -> bool:
     return currently_braking
 
 
+DEFAULT_MIN_ORDER = Decimal("2500")  # sotto questa variazione non si ribilancia una posizione già aperta
+
+
 def order_quantity(action: str, target_weight: Decimal | None, held: Decimal, free: Decimal,
-                   price: Decimal, total: Decimal) -> tuple[Decimal, str | None]:
+                   price: Decimal, total: Decimal, min_order: Decimal = ZERO) -> tuple[Decimal, str | None]:
     """Azioni intere da comprare o vendere per avvicinarsi al peso obiettivo.
 
     price e total in EUR; free = azioni vendibili (non già impegnate in ordini di vendita).
+    min_order: gli ordini di ribilanciamento (comprare ancora o vendere in parte un titolo già posseduto)
+    sotto questo controvalore non si fanno, perché le commissioni minime li renderebbero troppo cari.
+    Aprire una posizione nuova e vendere tutto si fa sempre.
     """
     if price <= ZERO:
         return ZERO, "prezzo non disponibile"
@@ -63,11 +69,11 @@ def order_quantity(action: str, target_weight: Decimal | None, held: Decimal, fr
         qty = floor_qty((total * w * CASH_BUFFER - current_value) / price)
         if qty <= 0:
             return ZERO, "importo inferiore al prezzo di un'azione"
-        return qty, None
-    if w > ZERO:
-        qty = min(floor_qty((current_value - total * w) / price), free)
     else:
-        qty = free
-    if qty <= 0:
-        return ZERO, "nessuna azione da vendere"
+        qty = min(floor_qty((current_value - total * w) / price), free) if w > ZERO else free
+        if qty <= 0:
+            return ZERO, "nessuna azione da vendere"
+    rebalance = held > ZERO and (action == "buy" or w > ZERO)
+    if rebalance and qty * price < min_order:
+        return ZERO, f"ribilanciamento di {qty * price:.0f} € sotto l'ordine minimo di {min_order:.0f} €"
     return qty, None

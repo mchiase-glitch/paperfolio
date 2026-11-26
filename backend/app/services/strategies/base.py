@@ -148,6 +148,12 @@ class BaseStrategy(ABC):
     backtest_unavailable: str | None = None  # motivo per cui il backtest non ha senso
 
     @property
+    def min_order(self) -> Decimal:
+        """Parametro comune `min_order` (€, predefinito 2.500): soglia minima degli ordini di ribilanciamento."""
+        from ..auto_rules import DEFAULT_MIN_ORDER
+        return Decimal(str(self.params.get("min_order", DEFAULT_MIN_ORDER)))
+
+    @property
     def uses_drawdown_brake(self) -> bool:
         """Parametro `drawdown_brake` (predefinito sì): se falso la strategia compra anche col freno acceso."""
         return bool(self.params.get("drawdown_brake", True))

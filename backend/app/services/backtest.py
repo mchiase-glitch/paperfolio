@@ -413,7 +413,8 @@ class BacktestEngine:
             if dec.action not in ("buy", "sell") or dec.symbol not in prices or dec.symbol in waiting:
                 continue
             held = self.holdings.get(dec.symbol, Holding()).qty
-            qty, err = order_quantity(dec.action, dec.target_weight, held, held, prices[dec.symbol], total)
+            qty, err = order_quantity(dec.action, dec.target_weight, held, held, prices[dec.symbol], total,
+                                      self.strategy.min_order)
             if not err:
                 new.append(PendingOrder(dec.symbol, dec.action, qty, dec.reason_it, d))
         if self.options.execution == "close":

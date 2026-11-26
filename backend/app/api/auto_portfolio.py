@@ -42,13 +42,62 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
     "P6": {"n_hold": 15, "rebalance_month": 4, "exclude": ["banks", "insurance", "utilities"], "rebalance_band": 0.2},
     "P7": {"rebalance_month": 1, "max_weight": 0.10},
 }
+# Parametri comuni a tutte le strategie (valgono anche se non salvati: sono i predefiniti delle strategie)
+COMMON_DEFAULTS: dict = {"min_order": 2500, "drawdown_brake": True}
 # Strategie che lavorano sulle tre liste insieme: la lista non si sceglie
 MULTI_LIST = {"P3", "P4", "P5", "P6", "P7"}
 
+# Regole di validazione dei parametri modificabili
+FRACTIONS = {"rebalance_band", "etf_share", "max_weight"}   # quote tra 0 e 1
+CHOICES = {"refuge": {"bond", "cash"}}
+LIST_CHOICES = {"exclude": {"banks", "insurance", "utilities"}}
+PERCENT_RANGE = {"abs_threshold": (-1.0, 1.0)}
+
+
+NOT_EDITABLE = {"etf_ita", "etf_eur", "etf_usa", "etf_refuge"}  # cambiarli richiederebbe nuovi dati e strumenti
+
+
+def editable_defaults(strategy_type: str) -> dict:
+    base = {k: v for k, v in STRATEGY_DEFAULTS.get(strategy_type, {}).items() if k not in NOT_EDITABLE}
+    return {**base, **COMMON_DEFAULTS}
+
+
+def _coerce_param(key: str, value, default):
+    """Converte e controlla un parametro modificato dall'utente, con lo stesso tipo del predefinito."""
+    bad = HTTPException(400, f"Valore non valido per {key}: {value!r}")
+    try:
+        if isinstance(default, bool):
+            if not isinstance(value, bool):
+                raise bad
+            return value
+        if isinstance(default, int):
+            v = int(value)
+            if v != float(value) or v < (1 if key != "min_order" else 0):
+                raise bad
+            if key == "rebalance_month" and not 1 <= v <= 12:
+                raise bad
+            return v
+        if isinstance(default, float):
+            v = float(value)
+            lo, hi = PERCENT_RANGE.get(key, (0.0, 1.0 if key in FRACTIONS else float("inf")))
+            if not lo <= v <= hi or (key == "max_weight" and v == 0):
+                raise bad
+            return v
+        if isinstance(default, list):
+            if not isinstance(value, list) or not set(value) <= LIST_CHOICES.get(key, set(value)):
+                raise bad
+            return list(value)
+        v = str(value).strip()
+        if not v or (key in CHOICES and v not in CHOICES[key]):
+            raise bad
+        return v
+    except (TypeError, ValueError):
+        raise bad from None
+
 
 def _p7_sleeves(params: dict, universe_list: str | None) -> list[dict]:
-    """Quote di P7: strategie scelte (default P2, P4, P5) in parti uguali, ognuna con i suoi parametri predefiniti."""
-    sleeves = params.get("sleeves") or [{"type": t} for t in ("P2", "P4", "P5")]
+    """Quote di P7: strategie scelte (default P2 e P4) in parti uguali, ognuna con i suoi parametri predefiniti."""
+    sleeves = params.get("sleeves") or [{"type": t} for t in ("P2", "P4")]
     out = []
     for s in sleeves:
         t = s.get("type")
@@ -101,6 +150,7 @@ def _config_dict(db: Session, cfg: StrategyConfig, account: Account | None) -> d
     if account:
         pending = len(db.scalars(select(Order.id).where(Order.account_id == account.id,
                                                        Order.status == "pending")).all())
+    nxt = auto_portfolio.next_check(db, cfg, strategy) if strategy else None
     return {
         "data_ready_pct": round(min(auto_portfolio.ready_pct(db, ss.tradeable, ss.reference),
                                     auto_portfolio.fundamentals_ready(db, strategy, ss)) * 100) if ss else 0,
@@ -114,6 +164,9 @@ def _config_dict(db: Session, cfg: StrategyConfig, account: Account | None) -> d
         "name": cfg.name,
         "strategy_type": cfg.strategy_type,
         "params": params,
+        "defaults": editable_defaults(cfg.strategy_type),
+        "next_check": nxt.isoformat() if nxt else None,
+        "performance": auto_portfolio.live_performance(db, account, strategy) if account and strategy else None,
         "is_paused": bool(cfg.is_paused),
         "is_drawdown_braking": bool(cfg.is_drawdown_braking),
         "created_at": cfg.created_at.isoformat(),
@@ -266,6 +319,45 @@ def run_now_live(config_id: int, db: Session = Depends(get_db)):
         tb = traceback.format_exc()
         raise HTTPException(500, f"{exc}\n\n{tb}")
     return result
+
+
+class ParamsBody(BaseModel):
+    params: dict = Field(default_factory=dict)
+    reset: bool = False                       # "ripristina default"
+    sleeve_shares: list[float] | None = None  # P7: quote delle strategie, nello stesso ordine
+
+
+@router.patch("/auto/{config_id}/params")
+def update_params(config_id: int, body: ParamsBody, db: Session = Depends(get_db)):
+    """Modifica i parametri (valgono dal prossimo controllo). Elenco dei titoli e strategie di P7 non si cambiano."""
+    cfg = db.get(StrategyConfig, config_id)
+    if cfg is None:
+        raise HTTPException(404, "Portafoglio automatico non trovato")
+    current = json.loads(cfg.params_json) if cfg.params_json else {}
+    defaults = editable_defaults(cfg.strategy_type)
+    if body.reset:
+        new = {**current, **defaults}
+        if "sleeves" in new:
+            for s in new["sleeves"]:
+                s["share"] = round(1 / len(new["sleeves"]), 6)
+    else:
+        unknown = set(body.params) - set(defaults)
+        if unknown:
+            raise HTTPException(400, f"Parametri non modificabili: {', '.join(sorted(unknown))}")
+        new = {**current, **{k: _coerce_param(k, v, defaults[k]) for k, v in body.params.items()}}
+        if body.sleeve_shares is not None:
+            sleeves = new.get("sleeves") or []
+            if len(body.sleeve_shares) != len(sleeves) or any(x <= 0 for x in body.sleeve_shares):
+                raise HTTPException(400, "Quote non valide: servono valori positivi, una per strategia")
+            tot = sum(body.sleeve_shares)
+            for s, x in zip(sleeves, body.sleeve_shares):
+                s["share"] = round(x / tot, 6)
+    if "keep_rank" in new and "n_hold" in new and new["keep_rank"] < new["n_hold"]:
+        raise HTTPException(400, "Il posto fino a cui si tengono i titoli non può essere prima del numero di titoli")
+    cfg.params_json = json.dumps(new)
+    db.commit()
+    account = db.scalar(select(Account).where(Account.strategy_config_id == config_id))
+    return _config_dict(db, cfg, account)
 
 
 @router.patch("/auto/{config_id}/pause")

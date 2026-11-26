@@ -1,7 +1,7 @@
 """
 P7 – Portafoglio combinato.
 
-Contiene più strategie scelte tra P1–P6 (default P2, P4 e P5), ciascuna con una quota del capitale
+Contiene più strategie scelte tra P1–P6 (default P2 e P4), ciascuna con una quota del capitale
 (default uguali). Ogni strategia lavora sulla propria quota come se fosse un portafoglio a sé:
 la quota tiene una liquidità e un numero di azioni "virtuali". Il portafoglio vero è uno solo:
 liquidità, zainetto, imposte e bollo sono comuni.
@@ -33,10 +33,11 @@ ONE = Decimal("1")
 FREQ_ORDER = {"daily": 0, "monthly": 1, "annual": 2}
 
 DEFAULT_SLEEVES = [
-    {"type": "P2", "share": 1 / 3, "params": {"universe_list": "ftse_mib", "sma_months": 10}},
-    {"type": "P4", "share": 1 / 3, "params": {}},
-    {"type": "P5", "share": 1 / 3, "params": {}},
+    {"type": "P2", "share": 1 / 2, "params": {"universe_list": "ftse_mib", "sma_months": 10}},
+    {"type": "P4", "share": 1 / 2, "params": {}},
 ]
+# P5 non è più tra le quote predefinite (studio delle varianti in backtest/CONTEXT_P5_varianti.md:
+# con le commissioni attuali perde e nessuna variante regge su titoli nuovi). Resta selezionabile.
 
 
 class SleeveContext(StrategyContext):

@@ -4,7 +4,9 @@
  */
 import { api } from "../api.js";
 import { esc, dateTime, money } from "../format.js";
-import { dataLine, pollWhilePreparing, readableParams, strategyDescription, strategyTitle } from "./auto.js";
+import {
+  dataLine, MONTHS, paramLabel, perfHtml, pollWhilePreparing, readableParams, strategyDescription, strategyTitle,
+} from "./auto.js";
 import { backtestList, openBacktestForm } from "./backtest.js";
 
 const ACTION_LABELS = { buy: "Acquisto", sell: "Vendita", hold: "Mantieni", skip: "Skip" };
@@ -31,6 +33,15 @@ export async function renderAutoDetail(el, configId) {
       + '<h3 class="section-title">Esecuzioni</h3>' + runsSection(runs);
 
     el.querySelector("#btn-bt")?.addEventListener("click", () => openBacktestForm(cfg));
+    el.querySelector("#btn-pause").addEventListener("click", async () => {
+      try {
+        await api.patch(`/api/auto/${id}/pause`);
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    bindParamEditor(el, cfg, load);
     el.querySelectorAll("[data-bt]").forEach((r) =>
       r.addEventListener("click", () => (location.hash = `#/backtest/${r.dataset.bt}`)));
 
@@ -78,15 +89,117 @@ function headerCard(cfg) {
         ${cfg.cash_balance != null ? `<div class="kv"><span class="k">Liquidità</span><span class="v">${money(cfg.cash_balance)}</span></div>` : ""}
         <div class="kv"><span class="k">Titoli in portafoglio</span><span class="v">${cfg.positions_count}</span></div>
         <div class="kv"><span class="k">Ordini in attesa</span><span class="v">${cfg.pending_orders}</span></div>
+        ${perfHtml(cfg)}
         ${paramRows}
       </div>
       ${dataLine(cfg)}
       <div class="btn-row" style="margin-top:.75rem">
         <button class="btn small" id="btn-dry">Prova ora (dry-run)</button>
         ${cfg.backtest_unavailable ? "" : '<button class="btn small" id="btn-bt">Backtest</button>'}
+        <button class="btn small btn-muted" id="btn-params">Modifica parametri</button>
+        <button class="btn small btn-muted" id="btn-pause">${cfg.is_paused ? "Riprendi" : "Pausa"}</button>
       </div>
       ${cfg.backtest_unavailable ? `<p class="small muted" style="margin-top:.5rem">Backtest non disponibile. ${esc(cfg.backtest_unavailable)}</p>` : ""}
+      <form id="param-form" style="display:none;margin-top:.75rem">${paramFields(cfg)}</form>
     </section>`;
+}
+
+// ── Modifica dei parametri ───────────────────────────────────────────────────
+
+const PERCENT_KEYS = new Set(["rebalance_band", "etf_share", "max_weight", "abs_threshold"]);
+const EXCLUDE_LABELS = { banks: "Banche", insurance: "Assicurazioni", utilities: "Utility" };
+
+function paramFields(cfg) {
+  const d = cfg.defaults || {};
+  const p = { ...d, ...(cfg.params || {}) };
+  const rows = Object.keys(d).map((k) => {
+    const v = p[k], def = d[k];
+    const hint = `<span class="small muted">predefinito: ${esc(defaultText(k, def))}</span>`;
+    let input;
+    if (typeof def === "boolean") {
+      input = `<label style="display:flex;gap:8px;align-items:center;font-weight:400;color:inherit">
+        <input type="checkbox" name="${k}" ${v ? "checked" : ""}> attivo</label>`;
+    } else if (k === "rebalance_month") {
+      input = `<select name="${k}">${MONTHS.map((m, i) => `<option value="${i + 1}" ${Number(v) === i + 1 ? "selected" : ""}>${m}</option>`).join("")}</select>`;
+    } else if (k === "refuge") {
+      input = `<select name="${k}"><option value="bond" ${v === "bond" ? "selected" : ""}>ETF titoli di Stato</option>
+        <option value="cash" ${v === "cash" ? "selected" : ""}>Liquidità</option></select>`;
+    } else if (Array.isArray(def)) {
+      input = Object.entries(EXCLUDE_LABELS).map(([x, lab]) => `<label style="display:flex;gap:8px;align-items:center;font-weight:400;color:inherit">
+        <input type="checkbox" name="${k}" value="${x}" ${v.includes(x) ? "checked" : ""}> ${lab}</label>`).join("");
+    } else if (PERCENT_KEYS.has(k)) {
+      input = `<div style="display:flex;gap:6px;align-items:center"><input type="number" name="${k}" step="0.5" inputmode="decimal" value="${+(v * 100).toFixed(2)}"> %</div>`;
+    } else {
+      const step = k === "min_order" ? 100 : Number.isInteger(def) ? 1 : "any";
+      input = `<div style="display:flex;gap:6px;align-items:center"><input type="number" name="${k}" step="${step}" inputmode="decimal" value="${v}">${k === "min_order" ? " €" : ""}</div>`;
+    }
+    return `<div class="form-group"><label>${esc(paramLabel(k))}</label>${input}${hint}</div>`;
+  });
+  const sleeves = cfg.params?.sleeves;
+  if (sleeves?.length) {
+    rows.push(`<div class="form-group"><label>Quote delle strategie</label>
+      ${sleeves.map((s, i) => `<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+        <span style="min-width:2.5em">${esc(s.type)}</span>
+        <input type="number" name="share_${i}" step="1" min="1" inputmode="decimal" value="${Math.round(s.share * 100)}"> %</div>`).join("")}
+      <span class="small muted">predefinito: parti uguali. Le nuove quote valgono dal prossimo ribilanciamento annuo delle quote.</span></div>`);
+  }
+  return `
+    <h3 class="section-title" style="margin-top:0">Parametri</h3>
+    ${rows.join("")}
+    <p class="small muted">Le modifiche valgono dal prossimo controllo. Il backtest usa sempre i parametri salvati.</p>
+    <div class="btn-row">
+      <button class="btn small" type="submit">Salva</button>
+      <button class="btn small btn-muted" type="button" id="btn-reset">Ripristina default</button>
+      <button class="btn small btn-muted" type="button" id="btn-cancel">Annulla</button>
+    </div>`;
+}
+
+function defaultText(k, v) {
+  if (typeof v === "boolean") return v ? "attivo" : "disattivo";
+  if (k === "rebalance_month") return MONTHS[v - 1];
+  if (k === "refuge") return v === "cash" ? "liquidità" : "ETF titoli di Stato";
+  if (Array.isArray(v)) return v.map((x) => EXCLUDE_LABELS[x] || x).join(", ").toLowerCase();
+  if (PERCENT_KEYS.has(k)) return `${String(+(v * 100).toFixed(2)).replace(".", ",")}%`;
+  if (k === "min_order") return money(v, "EUR", 0);
+  return String(v);
+}
+
+function bindParamEditor(el, cfg, reload) {
+  const form = el.querySelector("#param-form");
+  el.querySelector("#btn-params").addEventListener("click", () => {
+    form.style.display = form.style.display === "none" ? "" : "none";
+  });
+  form.querySelector("#btn-cancel").addEventListener("click", () => (form.style.display = "none"));
+  const send = async (body) => {
+    try {
+      await api.patch(`/api/auto/${cfg.id}/params`, body);
+      await reload();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+  form.querySelector("#btn-reset").addEventListener("click", () => {
+    if (confirm("Ripristinare tutti i parametri predefiniti?")) send({ reset: true });
+  });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const params = {};
+    for (const [k, def] of Object.entries(cfg.defaults || {})) {
+      if (typeof def === "boolean") params[k] = form.querySelector(`[name="${k}"]`).checked;
+      else if (Array.isArray(def)) params[k] = [...form.querySelectorAll(`[name="${k}"]:checked`)].map((x) => x.value);
+      else if (k === "refuge") params[k] = form.querySelector(`[name="${k}"]`).value;
+      else {
+        const raw = form.querySelector(`[name="${k}"]`).value.replace(",", ".");
+        const n = Number(raw);
+        if (raw === "" || Number.isNaN(n)) return alert(`Valore non valido: ${paramLabel(k)}`);
+        params[k] = PERCENT_KEYS.has(k) ? n / 100 : n;
+      }
+    }
+    const body = { params };
+    const sleeves = cfg.params?.sleeves;
+    if (sleeves?.length) body.sleeve_shares = sleeves.map((_, i) => Number(form.querySelector(`[name="share_${i}"]`).value));
+    send(body);
+  });
 }
 
 function runsSection(runs) {
