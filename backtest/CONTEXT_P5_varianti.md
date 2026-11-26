@@ -80,6 +80,14 @@ Una variante è promossa solo se, nello scenario **C-attuale oppure in C-basso**
 
 Se nessuna variante supera i criteri con C-attuale, la conclusione è: **P5 non è praticabile con il broker attuale.** Non si cercano altre varianti per "salvarla".
 
+**Precisazioni fissate il 26/11/2026, dopo la fase 2 ma prima di applicare i criteri e prima del test di robustezza:**
+- **Criterio 2:** il riferimento è sempre **V0 con C-attuale** (prova −0,4%, verifica −7,9%), anche per le varianti in C-basso. È stata una scelta dell'utente. Lo stesso vale per il criterio 4 (perdita massima di V0 C-attuale: −60,0%).
+- **Candidate:** solo V1–V5. V0 in C-basso è il riferimento con un altro broker, non una variante della strategia.
+- **"Variante migliore"** tra quelle che superano i criteri 1–4: quella con lo Sharpe più alto sull'intero periodo; a parità, quella con il rendimento netto in verifica più alto.
+- **Test di robustezza (§6)** nello stesso scenario di costo della variante migliore, con RSI 5, 10 e 15. "Regge" se, per tutte e tre le soglie:
+  - il rendimento netto è positivo sia in prova sia in verifica;
+  - il rendimento netto sull'intero periodo è almeno la metà di quello con RSI 10.
+
 ## 8. Output richiesto
 
 Per ogni combinazione variante × scenario di costo, un report in `backtest/reports/p5_varianti/` (CSV + un riepilogo `.md`) con:
@@ -100,7 +108,41 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
 - [x] **Fase 2:** lanciare V0–V5 negli scenari C-attuale e C-basso (12 backtest) e generare i report del §8.
   - *Chiusa il 26/11/2026.* Script `backtest/p5_varianti.py` (solo dati in cache, rilanciabile con gli stessi numeri); report in `reports/p5_varianti/`, confronto in `confronto.md`.
   - **Definizione di "lordo" e "costo per giro" nei report:** il lordo è il risultato ai prezzi di mercato; spread di cambio e slippage stanno nel costo per giro, insieme a commissioni e Tobin. Per questo il lordo medio di V0 è +0,27% e il costo per giro 0,35%, invece di +0,15% e 0,23% del §2, dove lo spread di cambio finiva nel lordo. La differenza tra lordo e costo è la stessa con le due definizioni.
-- [ ] **Fase 3:** applicare i criteri del §7 e fare il test di robustezza sulla variante migliore.
+- [x] **Fase 3:** applicare i criteri del §7 e fare il test di robustezza sulla variante migliore.
+  - *Chiusa il 26/11/2026.* Criteri applicati con le precisazioni del §7. Riferimento V0 C-attuale: prova −0,4%, verifica −7,9%, perdita massima −60,0%.
+
+    | Variante | Scenario | 1. netto > 0 in prova e verifica | 2. meglio di V0 | 3. lordo > costo | 4. perdita massima | Esito 1–4 |
+    |---|---|---|---|---|---|---|
+    | V1 | C-attuale | no (verifica −6,2%) | sì | no (0,37% < 0,47%) | no (−63,4%) | scartata |
+    | V2 | C-attuale | no (verifica −7,2%) | sì | no (0,30% < 0,35%) | sì | scartata |
+    | V3 | C-attuale | no (−0,1% / −13,9%) | no | no | no (−76,2%) | scartata |
+    | V4 | C-attuale | no (verifica −8,5%) | no | no | no (−61,1%) | scartata |
+    | V5 | C-attuale | no (verifica −5,5%) | sì | sì (0,44% = 0,44%, al limite) | sì | scartata |
+    | V1 | C-basso | sì | sì | sì | sì (−26,7%) | passa (Sharpe 0,33) |
+    | V2 | C-basso | sì | sì | sì | sì (−33,4%) | passa (Sharpe 0,41) |
+    | V3 | C-basso | sì | sì | sì | sì (−46,0%) | passa (Sharpe 0,43) |
+    | V4 | C-basso | no (verifica −1,2%) | no | sì | sì | scartata |
+    | V5 | C-basso | sì | sì | sì | sì (−44,3%) | **passa (Sharpe 0,52, la migliore)** |
+
+  - **Robustezza di V5 in C-basso** (`confronto_robustezza.md`):
+
+    | Soglia RSI | Netto prova | Netto verifica | Netto totale | Perdita massima |
+    |---|---|---|---|---|
+    | 5 | +11,9% | +1,8% | +7,1% | −48,4% |
+    | 10 | +13,2% | +6,9% | +10,3% | −44,3% |
+    | 15 | +14,4% | +8,5% | +11,6% | −50,6% |
+
+    Il risultato è positivo in prova e in verifica con tutte e tre le soglie, e con RSI 5 il netto totale (7,1%) è sopra la metà di quello con RSI 10 (5,15%): **regge**. RSI 15 va meglio di RSI 10, ma la soglia resta 10, perché i parametri non si ottimizzano (§4).
+  - **Conclusione della fase 3:**
+    - Nessuna variante supera i criteri con C-attuale: **P5 non è praticabile con il broker attuale.**
+    - **V5 (V1 + V2 + V3) è promossa nello scenario C-basso:** esecuzione alla chiusura, senza uscita sotto la media a 200, senza freno.
+
+    Cautele:
+    - La perdita massima resta alta (−44%).
+    - Le imposte sono molto pesanti: 218.000 € in 17 anni.
+    - Tutto dipende dal broker a basso costo, ipotizzato senza spread di cambio.
+    - In questo ciclo sono state fatte 15 prove, quindi c'è un certo rischio di aver scelto la migliore per caso.
+    - Vale il *survivorship bias* del §11.
 - [ ] **Fase 4 (facoltativa):** verifica su un universo nuovo, mai usato prima (per esempio azioni STOXX 600 fuori da FTSE MIB ed Euro Stoxx 50), solo per la variante promossa.
 - [ ] **Fase 5:** decisione. Se c'è una variante promossa, va in paper trading dal vivo come **P5b**, accanto a P5, per almeno 6 mesi prima di qualsiasi altra modifica. Per V1 dal vivo serve anche spostare il controllo vicino alla chiusura: circa 17:20 per Milano ed Europa, circa 21:45 per gli USA.
 
@@ -124,6 +166,9 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
 | 26/11/2026 | V4 | C-basso | +13,1% | −1,2% | −27,3% | fase 2 |
 | 26/11/2026 | V5 | C-attuale | +1,6% | −5,5% | −59,4% | fase 2, slippage 0,05% per lato |
 | 26/11/2026 | V5 | C-basso | +13,2% | +6,9% | −44,3% | fase 2, slippage 0,05% per lato |
+| 26/11/2026 | V5 RSI<5 | C-basso | +11,9% | +1,8% | −48,4% | fase 3, robustezza |
+| 26/11/2026 | V5 RSI<10 | C-basso | +13,2% | +6,9% | −44,3% | fase 3, robustezza (stesso run della fase 2) |
+| 26/11/2026 | V5 RSI<15 | C-basso | +14,4% | +8,5% | −50,6% | fase 3, robustezza |
 
 ## 11. Promemoria
 
