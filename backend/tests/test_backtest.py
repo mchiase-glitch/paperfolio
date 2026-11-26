@@ -77,7 +77,7 @@ def engine(strategy, data, capital="1000", c=None, instruments=None, fx=None):
 
 def test_p1_buys_equal_weights_at_next_open():
     data = {"A": series([10] * 5), "B": series([20] * 5)}
-    res = engine(P1BuyHold(None, {"rebalance_band": 0.25}), data).run()
+    res = engine(P1BuyHold(None, {"rebalance_band": 0.25, "max_weight": 1}), data).run()
     buys = [t for t in res.trades if t.side == "buy"]
     # 1000 × 50% × 0,98 = 490 € → 49 A a 10 €, 24 B a 20 €; eseguiti il secondo giorno
     assert {(t.symbol, t.qty, t.day) for t in buys} == {("A", 49, days(2)[1]), ("B", 24, days(2)[1])}

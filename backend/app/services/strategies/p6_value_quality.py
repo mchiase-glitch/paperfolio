@@ -109,7 +109,7 @@ class P6ValueQuality(BaseStrategy):
         r_q = {s: i + 1 for i, s in enumerate(by_q)}
         ranked = sorted(scored, key=lambda s: (r_ey[s] + r_q[s], r_ey[s]))
         top = ranked[:n_hold]
-        weight = ONE / Decimal(n_hold)
+        equal = ONE / Decimal(n_hold)
 
         def why(s: str) -> str:
             ey, q, how = scored[s]
@@ -120,9 +120,11 @@ class P6ValueQuality(BaseStrategy):
         decisions: list[Decision] = []
         if total <= ZERO:
             return notes
+        pool = list(prices.values())
         for sym in top:
             cur = ctx.quantity(sym) * prices[sym].price / total
             data = {"ey": scored[sym][0], "quality": scored[sym][1], "rank": ranked.index(sym) + 1}
+            weight, note = self.sized(ctx, prices[sym], equal, pool)
             if abs(cur - weight) <= band * weight:
                 decisions.append(Decision(sym, "hold", None, f"{why(sym)}; peso {pct(cur)} già vicino all'obiettivo",
                                           data))
@@ -131,8 +133,8 @@ class P6ValueQuality(BaseStrategy):
                     decisions.append(Decision(sym, "hold", None, f"{why(sym)}; freno drawdown attivo: nessun acquisto",
                                               data))
                 else:
-                    decisions.append(Decision(sym, "buy", weight, f"{why(sym)}: tra i primi {n_hold}, acquisto con "
-                                                                  f"peso {pct(weight)}", data))
+                    decisions.append(Decision(sym, "buy", weight, self.with_note(
+                        f"{why(sym)}: tra i primi {n_hold}, acquisto con peso {pct(weight)}", note), data))
             else:
                 decisions.append(Decision(sym, "sell", weight, f"{why(sym)}; peso {pct(cur)} sopra l'obiettivo: "
                                                                "vendita parziale", data))

@@ -27,6 +27,8 @@ ONE = Decimal("1")
 
 class P5Rsi2(BaseStrategy):
 
+    default_max_weight = Decimal("0.20")  # 5 posizioni da 1/5: il limite comune del 10% le dimezzerebbe
+
     def __init__(self, config, params: dict):
         super().__init__(config, params)
         self._cache: dict[str, tuple[int, list, list]] = {}  # simbolo → (id serie, RSI, somme cumulate)
@@ -102,11 +104,14 @@ class P5Rsi2(BaseStrategy):
                                    f"RSI(2) {r:.1f} sotto {rsi_entry:.0f}", data))
 
         slots = max_pos - (held - exiting)
+        by_symbol = {up.symbol: up for up in universe_prices}
         for k, (r, sym, head, data) in enumerate(sorted(candidates)):
             if drawdown_braking:
                 decisions.append(Decision(sym, "hold", None, f"{head}, ma freno drawdown attivo: nessun acquisto", data))
             elif k < slots:
-                decisions.append(Decision(sym, "buy", weight, f"{head}: acquisto con peso {weight * 100:.0f}%", data))
+                w, note = self.sized(ctx, by_symbol[sym], weight, universe_prices)
+                decisions.append(Decision(sym, "buy", w, self.with_note(
+                    f"{head}: acquisto con peso {w * 100:.0f}%", note), data))
             else:
                 decisions.append(Decision(sym, "hold", None,
                                           f"{head}, ma le {max_pos} posizioni sono già occupate", data))

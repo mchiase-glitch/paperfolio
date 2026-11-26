@@ -39,7 +39,7 @@ def test_p6_ranks_by_earnings_yield_plus_quality():
         "D.MI": fund(1, 100),    # 1%, 1%
     }
     ctx = FundCtx({}, TODAY, funds=funds)
-    dec = {d.symbol: d for d in P6ValueQuality(None, {"n_hold": 2}).generate_decisions(
+    dec = {d.symbol: d for d in P6ValueQuality(None, {"n_hold": 2, "max_weight": 1}).generate_decisions(
         ctx, [up(s, 10) for s in funds], False)}
     assert {s for s, d in dec.items() if d.action == "buy"} == {"A.MI", "B.MI"}
     assert dec["A.MI"].target_weight == D("0.5")

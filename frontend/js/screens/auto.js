@@ -358,6 +358,14 @@ const PARAM_LABELS = {
   sleeves: ["Strategie", (v) => v.map((s) => `${s.type} ${pc(s.share)}${s.params?.universe_list ? ` (${universeLabel(s.params.universe_list)})` : ""}`).join(", ")],
   min_order: ["Ordine minimo per ribilanciare", (v) => money(v, "EUR", 0)],
   drawdown_brake: ["Freno sul drawdown", (v) => (v ? "Sì" : "No")],
+  sizing: ["Dimensionamento", (v) => ({ equal: "Pesi uguali", inverse_vol: "Inverso alla volatilità", fixed_risk: "Rischio fisso" }[v] || v)],
+  risk_per_trade: ["Rischio per operazione", (v) => pc(v, 1)],
+  max_sector: ["Peso massimo per settore", (v) => pc(v)],
+  max_titles: ["Numero massimo di titoli", (v) => (Number(v) ? v : "Nessun limite")],
+  stop_fixed_pct: ["Stop fisso", (v) => (Number(v) ? `${pc(v, 1)} sotto l'acquisto` : "No")],
+  stop_trailing_pct: ["Trailing stop", (v) => (Number(v) ? `${pc(v, 1)} sotto il massimo` : "No")],
+  stop_atr_k: ["Stop sulla volatilità", (v) => (Number(v) ? `${String(v).replace(".", ",")} × ATR a 20 giorni` : "No")],
+  stop_time_days: ["Stop temporale", (v) => (Number(v) ? `dopo ${v} giorni di borsa` : "No")],
 };
 
 export function paramLabel(key) {

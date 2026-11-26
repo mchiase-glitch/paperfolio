@@ -39,7 +39,7 @@ def _make_config(db, name="P1 Test", stype="P1", universe_list="test_univ") -> S
     cfg = StrategyConfig(
         name=name,
         strategy_type=stype,
-        params_json=json.dumps({"universe_list": universe_list, "rebalance_band": "0.25"}),
+        params_json=json.dumps({"universe_list": universe_list, "rebalance_band": "0.25", "max_weight": 1}),
         is_paused=0,
         is_drawdown_braking=0,
     )
@@ -210,7 +210,7 @@ def _rows(n_days, start_price, drift, start_date):
     return out
 
 
-P1_PARAMS = {"universe_list": "test_univ", "rebalance_band": "0.25"}
+P1_PARAMS = {"max_weight": 1, "universe_list": "test_univ", "rebalance_band": "0.25"}
 
 
 def test_p1_buy_all_on_empty_portfolio():
@@ -317,6 +317,7 @@ def no_background(monkeypatch):
     started = []
     monkeypatch.setattr(auto_portfolio, "start_preparation", lambda ss, *a: started.append(ss.key) or True)
     monkeypatch.setattr(auto_portfolio, "fetch_many", lambda db, symbols: {})
+    monkeypatch.setattr(auto_portfolio, "start_sector_fetch", lambda symbols: None)
     return started
 
 

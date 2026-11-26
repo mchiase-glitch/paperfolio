@@ -37,6 +37,7 @@ from .corporate_events import dividend_breakdown
 from .fx import to_eur
 from .money import ZERO, eur
 from .price_history import DayRow, fetch_history
+from .risk import StopParams, apply_limits, entry_reference, needs_sectors, stop_level
 from .strategies import STRATEGY_CLASSES, STRATEGY_VERSIONS
 from .strategies.base import BaseStrategy, StrategyContext, UniversePrice
 from .strategies.common import REGIONS
@@ -169,6 +170,9 @@ class Holding:
     cost_gross: Decimal = ZERO   # solo prezzo, in EUR
     cost_fiscal: Decimal = ZERO  # prezzo + commissioni di acquisto
     opened: date | None = None   # giorno dell'acquisto che ha aperto la posizione
+    stop_entry: float | None = None  # stop facoltativi: prezzo d'ingresso, massimo raggiunto, ATR all'ingresso
+    stop_high: float = 0.0
+    stop_atr: float | None = None
 
 
 @dataclass
@@ -267,9 +271,12 @@ class BacktestEngine:
     def __init__(self, strategy: BaseStrategy, symbols: list[str], instruments: dict[str, InstrumentInfo],
                  series: dict[str, Series], fx: dict[str, Series], costs: Costs, start: date, end: date,
                  capital: Decimal, progress: Callable[[int], None] | None = None,
-                 groups: dict[str, tuple[str, ...]] | None = None, options: EngineOptions | None = None):
+                 groups: dict[str, tuple[str, ...]] | None = None, options: EngineOptions | None = None,
+                 sectors: dict[str, str] | None = None):
         self.strategy = strategy
         self.options = options or EngineOptions()
+        self.sectors = sectors or {}
+        self.stops = StopParams.from_params(strategy.params) if strategy is not None else StopParams()
         self.symbols = symbols  # negoziabili; `series` contiene anche indici e cambi letti dai segnali
         self.groups = groups or {}
         self.instruments = instruments
@@ -349,6 +356,8 @@ class BacktestEngine:
         for i, d in enumerate(cal):
             self._dividends(d)
             self._execute_pending(d)
+            if self.stops.has_price_stop:
+                self._price_stops(d)
 
             pv = self.positions_value(d)
             # Bollo pro rata: ogni giorno di calendario vale il controvalore dell'ultimo giorno noto
@@ -377,6 +386,8 @@ class BacktestEngine:
             next_day = cal[i + 1] if i + 1 < len(cal) else None
             if next_day is not None and self.strategy.should_run_today(d, next_day):
                 self._signal(d, active, next_day)
+            if next_day is not None and self.stops.time_days:
+                self._time_stops(d)
 
             pct = int((i + 1) * 100 / len(cal))
             if self.progress and pct != last_pct:
@@ -403,10 +414,13 @@ class BacktestEngine:
                 meta = dict(market=info.market, instrument_type=info.type, listing_currency=info.currency)
             ups.append(UniversePrice(sym, None, price if ok else ZERO, "EUR", ok,
                                      groups=self.groups.get(sym, ()), **meta))
-        decisions = self.strategy.generate_decisions(BacktestContext(self, d, next_day), ups, braking)
+        ctx = BacktestContext(self, d, next_day)
+        decisions = self.strategy.generate_decisions(ctx, ups, braking)
 
         prices = {up.symbol: up.price for up in ups if up.available}
         total = self.cash + sum((h.qty * prices[s] for s, h in self.holdings.items() if s in prices), ZERO)
+        decisions = apply_limits(self.strategy.params, ctx, decisions, ups, total, self.sectors,
+                                 self.strategy.min_order)
         waiting = {o.symbol for o in self.pending}
         new: list[PendingOrder] = []
         for dec in decisions:
@@ -435,6 +449,48 @@ class BacktestEngine:
                 else:
                     self._buy(d, order, Decimal(str(row.close)), at_open=False)
         return later
+
+    def _price_stops(self, d: date) -> None:
+        """Stop di prezzo come gli ordini stop dal vivo: se l'apertura è già sotto il livello si vende
+        all'apertura, se il minimo del giorno lo tocca si vende al livello. Il livello si fissa alla chiusura
+        del giorno d'acquisto e da lì conta dal giorno dopo; il trailing sale con i massimi giornalieri."""
+        waiting = {o.symbol for o in self.pending}
+        ctx = BacktestContext(self, d)
+        for sym, h in list(self.holdings.items()):
+            if h.qty <= 0:
+                continue
+            row = self.series[sym].row_on(d)
+            if h.stop_entry is None:
+                if h.opened is not None and h.opened <= d:
+                    ref = entry_reference(ctx, sym, h.opened)
+                    if ref is not None:
+                        h.stop_entry, h.stop_high, h.stop_atr = ref
+                continue
+            if row is None or sym in waiting:
+                continue
+            lv = stop_level(self.stops, h.stop_entry, h.stop_high, h.stop_atr)
+            if lv is not None:
+                level, why = lv
+                low = row.low if row.low is not None else row.close
+                opening = row.open or row.close
+                if opening <= level or low <= level:
+                    at_open = opening <= level
+                    price = Decimal(str(opening if at_open else level))
+                    self._sell(d, PendingOrder(sym, "sell", h.qty, f"Stop: {why}, livello {level:.2f}", d), price,
+                               at_open=at_open)
+                    continue
+            h.stop_high = max(h.stop_high, row.high if row.high is not None else row.close)
+
+    def _time_stops(self, d: date) -> None:
+        """Stop temporale: dopo N giorni di borsa si vende all'apertura successiva."""
+        waiting = {o.symbol for o in self.pending}
+        ctx = BacktestContext(self, d)
+        for sym, h in self.holdings.items():
+            if h.qty > 0 and sym not in waiting:
+                days = ctx.held_days(sym)
+                if days >= self.stops.time_days:
+                    self.pending.append(PendingOrder(sym, "sell", h.qty, f"Stop temporale: posizione aperta da "
+                                                                         f"{days} giorni di borsa", d))
 
     def _slipped(self, side: str, price: Decimal) -> Decimal:
         s = self.options.slippage
@@ -499,6 +555,7 @@ class BacktestEngine:
         h = self.holdings.setdefault(order.symbol, Holding())
         if h.qty <= 0:
             h.opened = d
+            h.stop_entry, h.stop_atr = None, None  # lo stop si fissa alla chiusura del giorno d'acquisto
         h.qty += qty
         h.cost_gross += gross
         h.cost_fiscal += gross + comm
@@ -798,9 +855,13 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
             db.commit()
 
     options = EngineOptions.from_params(params)
+    sectors: dict[str, str] = {}
+    if needs_sectors(params):
+        from .fundamentals import sectors as load_sectors
+        sectors = load_sectors(db, symbols)
     engine = BacktestEngine(strategy, symbols, instruments, series, fx,
                             apply_cost_scenario(load_costs(db), options.costs),
-                            run.start_date, run.end_date, run.initial_capital, progress, ss.groups, options)
+                            run.start_date, run.end_date, run.initial_capital, progress, ss.groups, options, sectors)
     res = engine.run()
     cal = [d for d, _ in res.curve]
     bench = blended_benchmark([(series.get(sym), fx.get(ccy) if ccy != "EUR" else None) for sym, ccy in bench_specs],
@@ -808,6 +869,13 @@ def execute(db: Session, run: BacktestRun, fetch: bool = True) -> None:
     results = build_results(res, bench, bench_label, run.initial_capital, run.split_date,
                             float(params.get("risk_free", 0.02)))
     results["warnings"] = warnings_for(db, run, missing)
+    if needs_sectors(params):
+        stocks = [s for s in series if s in instruments and instruments[s].type == "stock"]
+        no_sector = [s for s in stocks if s not in sectors]
+        results["warnings"].append(
+            "Il limite per settore usa la classificazione di oggi: negli anni passati alcune società erano in un "
+            "settore diverso." + (f" {len(no_sector)} titoli su {len(stocks)} non hanno un settore noto e non "
+                                  "contano per il limite." if no_sector else ""))
     results["first_day"] = cal[0].isoformat()
 
     db.add_all(BacktestTrade(run_id=run.id, day=t.day, symbol=t.symbol, side=t.side, quantity=t.qty,

@@ -158,6 +158,24 @@ class BaseStrategy(ABC):
         """Parametro `drawdown_brake` (predefinito sì): se falso la strategia compra anche col freno acceso."""
         return bool(self.params.get("drawdown_brake", True))
 
+    default_max_weight = Decimal("0.10")  # P5 (5 posizioni da 1/5) usa 0,20
+
+    @property
+    def max_weight(self) -> Decimal:
+        """Parametro comune `max_weight`: peso massimo di un'azione sul portafoglio (gli ETF sono esclusi)."""
+        return Decimal(str(self.params.get("max_weight", self.default_max_weight)))
+
+    @property
+    def uses_portfolio_limits(self) -> bool:
+        """Limiti di settore, numero di titoli e stop si applicano al portafoglio intero (P7: non alle quote)."""
+        return True
+
+    def sized(self, ctx: "StrategyContext", up: "UniversePrice", base: Decimal,
+              universe: list["UniversePrice"]) -> tuple[Decimal, str]:
+        """Peso obiettivo dopo il dimensionamento scelto e il limite per titolo, con la spiegazione."""
+        from ..risk import sized_weight
+        return sized_weight(self.params, self.max_weight, ctx, up, base, universe)
+
     def load_state(self, state_json: str | None) -> None:
         """Stato tra un'esecuzione e l'altra (solo le strategie che ne hanno bisogno, es. P7)."""
 
@@ -192,6 +210,10 @@ class BaseStrategy(ABC):
 
     def _param_decimal(self, key: str, default: str) -> Decimal:
         return Decimal(str(self.params.get(key, default)))
+
+    @staticmethod
+    def with_note(reason: str, note: str) -> str:
+        return f"{reason} ({note})" if note else reason
 
     # ── Dimensionamento ───────────────────────────────────────────────────────
 

@@ -42,6 +42,7 @@ from . import instruments as instruments_svc
 from . import orders as orders_svc
 from . import positions as positions_svc
 from . import prices as prices_svc
+from . import risk
 from .auto_rules import (  # noqa: F401
     BRAKE_WINDOW_DAYS, CASH_BUFFER, DRAWDOWN_ACTIVATE, DRAWDOWN_RESUME, brake_state, drawdown, order_quantity,
 )
@@ -187,7 +188,136 @@ def run_all_strategies(db: Session, is_dry_run: bool = False, today: date | None
             db.rollback()
             log.error("Errore strategia %s (%s): %s", cfg.name, cfg.strategy_type, exc, exc_info=True)
             results.append({"config_id": cfg.id, "status": "error", "note": str(exc)})
+        if not is_dry_run and strategy is not None:
+            try:
+                manage_stops(db, cfg, strategy, today=today)
+            except Exception as exc:  # noqa: BLE001 - un errore sugli stop non blocca le altre strategie
+                db.rollback()
+                log.error("Stop della strategia %s: %s", cfg.name, exc, exc_info=True)
     return results
+
+
+# ── Stop facoltativi ──────────────────────────────────────────────────────────
+
+def is_protective(order: Order) -> bool:
+    """Ordine stop messo da un portafoglio automatico a protezione di una posizione."""
+    return bool(order.note) and order.note.startswith(risk.STOP_NOTE)
+
+
+def manage_stops(db: Session, config: StrategyConfig, strategy: BaseStrategy, today: date | None = None,
+                 now: datetime | None = None) -> list[tuple[str, str]]:
+    """Ogni giorno di borsa, dopo il controllo della strategia: mette (o aggiorna) un ordine stop per ogni
+    posizione aperta e vende a mercato quelle che hanno raggiunto lo stop temporale. Restituisce le azioni
+    fatte (simbolo, descrizione), che finiscono anche nel registro.
+
+    Un solo ordine per titolo: se sono attivi più stop vale il livello più alto; con il trailing stop l'ordine
+    è un trailing stop che parte da quel livello e sale con il prezzo (lo aggiorna il motore ordini)."""
+    now = now or utcnow()
+    today = today or now.astimezone(ROME).date()
+    if today.weekday() >= 5:
+        return []
+    account = db.scalar(select(Account).where(Account.strategy_config_id == config.id))
+    if account is None or account.closed_at is not None:
+        return []
+    sp = risk.StopParams.from_params(strategy.params)
+    pending = db.scalars(select(Order).where(Order.account_id == account.id, Order.status == "pending")).all()
+    protective = {o.instrument_id: o for o in pending if is_protective(o)}
+    busy = {o.instrument_id for o in pending if not is_protective(o)}
+    done: list[tuple[str, str]] = []
+
+    def cancel(o: Order, why: str) -> None:
+        o.status, o.cancelled_at, o.note = "cancelled", now, f"{o.note} — {why}"
+
+    if not sp.any:
+        for o in protective.values():
+            cancel(o, "stop disattivati")
+            done.append((db.get(Instrument, o.instrument_id).symbol, "Stop disattivati: ordine stop annullato"))
+    else:
+        ctx = LiveContext(db, account, today)
+        for pos in positions_svc.open_positions(db, account.id).values():
+            if pos.quantity <= 0 or pos.instrument_id in busy:
+                continue  # c'è un ordine della strategia in attesa: lo stop si mette dopo
+            inst = db.get(Instrument, pos.instrument_id)
+            stop = protective.get(inst.id)
+            entry = ctx.entry_date(inst.symbol)
+            if entry is None:
+                continue
+            days = ctx.held_days(inst.symbol)
+            if sp.time_days and days >= sp.time_days:
+                if stop:
+                    cancel(stop, "sostituito dallo stop temporale")
+                    db.flush()
+                why = f"Stop temporale: posizione aperta da {days} giorni di borsa (limite {sp.time_days}), vendita"
+                try:
+                    order = orders_svc.place_order(db, account, inst, "sell", pos.quantity, now)
+                    order.note = f"Automatico: {config.name} — stop temporale"
+                    db.commit()
+                    done.append((inst.symbol, why))
+                except (orders_svc.OrderError, DataProviderError) as exc:
+                    db.rollback()
+                    done.append((inst.symbol, f"{why} — ordine non piazzato: {exc}"))
+                continue
+            if not sp.has_price_stop:
+                if stop:
+                    cancel(stop, "stop di prezzo disattivati")
+                continue
+            ref = risk.entry_reference(ctx, inst.symbol, entry)
+            lv = risk.stop_level(sp, *ref) if ref else None
+            if lv is None:
+                continue
+            level = Decimal(str(round(lv[0], 4)))
+            kind = "trailing_stop" if sp.trailing > 0 else "stop"
+            if stop and stop.quantity == pos.quantity and stop.order_type == kind:
+                if stop.trigger_price is None or level > stop.trigger_price:
+                    stop.trigger_price = level  # lo stop sale, non scende mai
+                continue
+            if stop:
+                cancel(stop, "quantità o tipo cambiati")
+                db.flush()
+            note = f"{risk.STOP_NOTE} ({config.name}): {lv[1]}"
+            try:
+                order = orders_svc.place_order(db, account, inst, "sell", pos.quantity, now, kind, level)
+                order.note = note
+                if kind == "trailing_stop":
+                    order.trailing_distance = sp.trailing * 100  # il motore ordini la vuole in punti percentuali
+                db.commit()
+                verb = "eseguito subito (prezzo già sotto il livello)" if order.status == "executed" else "in attesa"
+                done.append((inst.symbol, f"Ordine stop a {level:.2f} {inst.currency} su {pos.quantity:f} azioni: "
+                                          f"{lv[1]} — {verb}"))
+            except (orders_svc.OrderError, DataProviderError) as exc:
+                db.rollback()
+                done.append((inst.symbol, f"Ordine stop non piazzato: {exc}"))
+    db.commit()
+    if done:
+        run = _save_run(db, config, account, _side_key(f"{config.id}_stops_{today.isoformat()}", now, "stop"),
+                        now, False, "ok", "Gestione degli stop")
+        for sym, why in done:
+            db.add(StrategyDecision(run_id=run.id, symbol=sym, action="sell" if "temporale" in why else "hold",
+                                    reason_it=why, signal_data_json="{}"))
+        db.commit()
+    return done
+
+
+_sector_attempted: set[str] = set()
+
+
+def start_sector_fetch(symbols: list[str]) -> None:
+    """Scarica in background il settore dei titoli che non l'hanno mai avuto (una volta per avvio)."""
+    todo = [s for s in symbols if s not in _sector_attempted]
+    if not todo:
+        return
+    _sector_attempted.update(todo)
+
+    def work() -> None:
+        from ..database import SessionLocal
+        from ..models import Fundamentals
+        with SessionLocal() as db:
+            for sym in todo:
+                if db.get(Fundamentals, sym) is None:
+                    fundamentals_svc.refresh(db, sym)
+                    time.sleep(FETCH_DELAY_S)
+
+    threading.Thread(target=work, daemon=True, name="settori").start()
 
 
 def run_strategy(
@@ -264,6 +394,15 @@ def run_strategy(
     ctx.force_all = is_dry_run  # P7: la simulazione mostra cosa farebbero tutte le quote
     decisions = strategy.generate_decisions(ctx, universe_prices,
                                             drawdown_braking and strategy.uses_drawdown_brake)
+    # ── Passo 3c: limiti per settore e numero di titoli (sugli acquisti) ──
+    sectors = {}
+    if risk.needs_sectors(strategy.params):
+        sectors = fundamentals_svc.sectors(db, symbols)
+        if not is_dry_run:
+            start_sector_fetch([s for s in symbols if s not in sectors and price_map.get(s)
+                                and price_map[s].instrument_type == "stock"])
+    decisions = risk.apply_limits(strategy.params, ctx, decisions, universe_prices, total, sectors,
+                                  strategy.min_order)
 
     key = _side_key(run_key, now, "dry") if is_dry_run else run_key
     run = _save_run(db, config, account, key, now, is_dry_run, "ok", note)
@@ -559,16 +698,23 @@ def _place_order(
     if not up.available or not up.instrument_id or up.price <= ZERO:
         return None, "prezzo non disponibile"
     inst = db.get(Instrument, up.instrument_id)
-    pending = db.scalar(select(Order).where(Order.account_id == account.id, Order.instrument_id == inst.id,
-                                            Order.status == "pending"))
-    if pending is not None:
+    pending = db.scalars(select(Order).where(Order.account_id == account.id, Order.instrument_id == inst.id,
+                                             Order.status == "pending")).all()
+    stops = [o for o in pending if is_protective(o)]
+    if len(stops) < len(pending):
         return None, "c'è già un ordine in attesa su questo titolo"
 
     held = positions_svc.position(db, account.id, inst.id).quantity
-    free = held - positions_svc.pending_sell_quantity(db, account.id, inst.id)
+    # Lo stop automatico si annulla prima dell'ordine della strategia e si rimette subito dopo
+    free = held - positions_svc.pending_sell_quantity(db, account.id, inst.id) \
+        + sum((o.quantity for o in stops if o.side == "sell"), ZERO)
     qty, err = order_quantity(dec.action, dec.target_weight, held, free, up.price, total, min_order)
     if err or dry_run:
         return None, err
+    for o in stops:
+        o.status, o.cancelled_at = "cancelled", now
+        o.note = f"{o.note} — annullato per un ordine della strategia"
+    db.flush()
     try:
         if dec.action == "buy":
             # Riduce la quantità se la liquidità libera non basta (prenotazione a mercato chiuso, commissioni)

@@ -85,13 +85,13 @@ class P3DualMomentum(BaseStrategy):
                 why[etf_sym] = f"{head}: quota ETF {pct(etf_share)}"
             stock_share = ONE - etf_share
             if stock_share > 0:
-                moms = [(momentum_12_1(ctx, up.symbol, up.listing_currency), up.symbol)
-                        for up in prices.values() if region.stocks in up.groups and up.instrument_type == "stock"]
+                pool = [up for up in prices.values() if region.stocks in up.groups and up.instrument_type == "stock"]
+                moms = [(momentum_12_1(ctx, up.symbol, up.listing_currency), up.symbol) for up in pool]
                 top = sorted(((m, s) for m, s in moms if m is not None), reverse=True)[:n_stocks]
                 for rank, (m, s) in enumerate(top, start=1):
-                    targets[s] = stock_share / len(top)
-                    why[s] = (f"{head}: tra i {len(top)} titoli della regione con il miglior momentum 12-1 "
-                              f"({rank}°, {pct(m)})")
+                    targets[s], note = self.sized(ctx, prices[s], stock_share / len(top), pool)
+                    why[s] = self.with_note(f"{head}: tra i {len(top)} titoli della regione con il miglior "
+                                            f"momentum 12-1 ({rank}°, {pct(m)})", note)
         else:
             head = (f"Rendimenti a 12 mesi in euro: {summary}. Nessuna regione supera la soglia del "
                     f"{pct(threshold)}")

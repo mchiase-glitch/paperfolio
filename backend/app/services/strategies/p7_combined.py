@@ -14,7 +14,9 @@ A ogni esecuzione:
 4. gli ordini sullo stesso titolo si compensano: se una strategia compra 100 ENI e un'altra ne
    vende 60, parte un solo acquisto da 40;
 5. limite di rischio sul portafoglio intero: nessuna azione oltre il 10% del totale, sommando le strategie
-   (gli ETF su indici sono esclusi dal limite: sono già diversificati).
+   (gli ETF su indici sono esclusi dal limite: sono già diversificati). Anche i limiti per settore e per
+   numero di titoli e gli stop facoltativi valgono sul portafoglio intero (li applica l'orchestratore);
+   il dimensionamento resta quello di ogni strategia (pesi uguali).
 
 Parametri: sleeves ([{"type": "P2", "share": 0.333, "params": {...}}, ...]), rebalance_month (1),
 max_weight (0.10).
@@ -84,7 +86,9 @@ class P7Combined(BaseStrategy):
             seen[t] = seen.get(t, 0) + 1
             name = t if seen[t] == 1 else f"{t}-{seen[t]}"
             share = Decimal(str(round(float(spec.get("share", 1)) / total_share, 6)))
-            self.sleeves.append((name, STRATEGY_CLASSES[t](None, dict(spec.get("params") or {})), share))
+            # Il limite per titolo vale sul portafoglio intero (più sotto), non dentro le singole quote
+            sleeve_params = {**(spec.get("params") or {}), "max_weight": 1}
+            self.sleeves.append((name, STRATEGY_CLASSES[t](None, sleeve_params), share))
         self.state: dict = {}
         self.needs_fundamentals = any(s.needs_fundamentals for _, s, _ in self.sleeves)
         unavailable = [n for n, s, _ in self.sleeves if s.backtest_unavailable]

@@ -48,13 +48,14 @@ class P1BuyHold(BaseStrategy):
             return []
 
         n = len(available)
-        target_weight = ONE / Decimal(str(n))
+        equal = ONE / Decimal(str(n))
         total = ctx.cash() + holdings_value(ctx, universe_prices)
         if total <= ZERO:
             return []
 
         decisions: list[Decision] = []
         for up in available:
+            target_weight, note = self.sized(ctx, up, equal, available)
             current_weight = ctx.quantity(up.symbol) * up.price / total
             deviation = abs(current_weight - target_weight)
             data = {"current_weight": str(current_weight), "target_weight": str(target_weight)}
@@ -76,8 +77,9 @@ class P1BuyHold(BaseStrategy):
                 else:
                     decisions.append(Decision(
                         up.symbol, "buy", target_weight,
-                        f"Peso corrente {_pct(current_weight)} < obiettivo {_pct(target_weight)} "
-                        f"(scostamento {_pct(deviation)} > banda {_pct(band * target_weight)}): acquisto",
+                        self.with_note(f"Peso corrente {_pct(current_weight)} < obiettivo {_pct(target_weight)} "
+                                       f"(scostamento {_pct(deviation)} > banda {_pct(band * target_weight)}): "
+                                       "acquisto", note),
                         data,
                     ))
             else:

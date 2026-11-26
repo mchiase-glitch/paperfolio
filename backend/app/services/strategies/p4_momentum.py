@@ -52,6 +52,7 @@ class P4Momentum(BaseStrategy):
         ranked = sorted((s for s in moms if moms[s] is not None), key=lambda s: -moms[s])
         rank = {s: i + 1 for i, s in enumerate(ranked)}
         market = {up.symbol: up.market for up in prices}
+        by_symbol = {up.symbol: up for up in prices}
         trend = {code: above_sma(ctx, r.index, trend_days) for code, r in REGIONS.items()}
 
         decisions: list[Decision] = []
@@ -93,7 +94,8 @@ class P4Momentum(BaseStrategy):
                                           f"{head}, ma {region.label} ({t[1]:.0f}) è sotto la media a {trend_days} "
                                           f"giorni ({t[2]:.0f}): il posto resta in liquidità", data))
             else:
-                decisions.append(Decision(sym, "buy", weight,
-                                          f"{head}; {region.label} sopra la media a {trend_days} giorni: acquisto "
-                                          f"con peso {pct(weight)}", data))
+                w, note = self.sized(ctx, by_symbol[sym], weight, prices)
+                decisions.append(Decision(sym, "buy", w,
+                                          self.with_note(f"{head}; {region.label} sopra la media a {trend_days} "
+                                                         f"giorni: acquisto con peso {pct(w)}", note), data))
         return decisions

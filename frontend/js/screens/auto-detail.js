@@ -106,17 +106,35 @@ function headerCard(cfg) {
 
 // ── Modifica dei parametri ───────────────────────────────────────────────────
 
-const PERCENT_KEYS = new Set(["rebalance_band", "etf_share", "max_weight", "abs_threshold"]);
+const PERCENT_KEYS = new Set(["rebalance_band", "etf_share", "max_weight", "abs_threshold", "max_sector",
+  "risk_per_trade", "stop_fixed_pct", "stop_trailing_pct"]);
 const EXCLUDE_LABELS = { banks: "Banche", insurance: "Assicurazioni", utilities: "Utility" };
+const SIZING_LABELS = { equal: "Pesi uguali", inverse_vol: "Inverso alla volatilità (60 giorni)", fixed_risk: "Rischio fisso per operazione" };
+const OFF_WHEN_ZERO = new Set(["max_titles", "stop_fixed_pct", "stop_trailing_pct", "stop_atr_k", "stop_time_days"]);
+// Titoletti che separano i gruppi di parametri comuni
+const GROUP_BEFORE = { min_order: "Regole comuni", sizing: "Dimensionamento e limiti", stop_fixed_pct: "Stop facoltativi" };
+const HELP = {
+  sizing: "Inverso alla volatilità: i titoli più tranquilli pesano di più. Rischio fisso: peso = rischio ÷ distanza dallo stop, mai oltre il peso normale (serve uno stop di prezzo).",
+  risk_per_trade: "Solo con il rischio fisso: quota del portafoglio che si accetta di perdere se scatta lo stop.",
+  max_weight: "Vale sugli acquisti; gli ETF sono esclusi.",
+  max_sector: "Vale sugli acquisti: un settore salito oltre il limite non viene venduto.",
+  max_titles: "Scrivi 0 per non avere limiti.",
+  stop_fixed_pct: "Vende se il prezzo scende di questa percentuale sotto il prezzo d'acquisto. 0 = disattivato.",
+  stop_trailing_pct: "Vende se il prezzo scende di questa percentuale sotto il massimo raggiunto. 0 = disattivato.",
+  stop_atr_k: "Vende se il prezzo scende di k volte l'ATR a 20 giorni sotto il prezzo d'acquisto. 0 = disattivato.",
+  stop_time_days: "Vende dopo questo numero di giorni di borsa. 0 = disattivato.",
+};
 
 function paramFields(cfg) {
   const d = cfg.defaults || {};
   const p = { ...d, ...(cfg.params || {}) };
   const rows = Object.keys(d).map((k) => {
     const v = p[k], def = d[k];
-    const hint = `<span class="small muted">predefinito: ${esc(defaultText(k, def))}</span>`;
+    const hint = `<span class="small muted">predefinito: ${esc(defaultText(k, def))}${HELP[k] ? `. ${esc(HELP[k])}` : ""}</span>`;
     let input;
-    if (typeof def === "boolean") {
+    if (k === "sizing") {
+      input = `<select name="${k}">${Object.entries(SIZING_LABELS).map(([x, lab]) => `<option value="${x}" ${v === x ? "selected" : ""}>${lab}</option>`).join("")}</select>`;
+    } else if (typeof def === "boolean") {
       input = `<label style="display:flex;gap:8px;align-items:center;font-weight:400;color:inherit">
         <input type="checkbox" name="${k}" ${v ? "checked" : ""}> attivo</label>`;
     } else if (k === "rebalance_month") {
@@ -133,7 +151,9 @@ function paramFields(cfg) {
       const step = k === "min_order" ? 100 : Number.isInteger(def) ? 1 : "any";
       input = `<div style="display:flex;gap:6px;align-items:center"><input type="number" name="${k}" step="${step}" inputmode="decimal" value="${v}">${k === "min_order" ? " €" : ""}</div>`;
     }
-    return `<div class="form-group"><label>${esc(paramLabel(k))}</label>${input}${hint}</div>`;
+    const title = GROUP_BEFORE[k] || (k === "max_sector" && !("sizing" in d) ? "Limiti" : null);
+    const group = title ? `<h4 class="small muted" style="margin:1rem 0 .4rem;text-transform:uppercase;letter-spacing:.04em">${title}</h4>` : "";
+    return `${group}<div class="form-group"><label>${esc(paramLabel(k))}</label>${input}${hint}</div>`;
   });
   const sleeves = cfg.params?.sleeves;
   if (sleeves?.length) {
@@ -156,6 +176,8 @@ function paramFields(cfg) {
 
 function defaultText(k, v) {
   if (typeof v === "boolean") return v ? "attivo" : "disattivo";
+  if (k === "sizing") return (SIZING_LABELS[v] || v).toLowerCase();
+  if (OFF_WHEN_ZERO.has(k) && !Number(v)) return k === "max_titles" ? "nessun limite" : "disattivato";
   if (k === "rebalance_month") return MONTHS[v - 1];
   if (k === "refuge") return v === "cash" ? "liquidità" : "ETF titoli di Stato";
   if (Array.isArray(v)) return v.map((x) => EXCLUDE_LABELS[x] || x).join(", ").toLowerCase();
@@ -187,7 +209,7 @@ function bindParamEditor(el, cfg, reload) {
     for (const [k, def] of Object.entries(cfg.defaults || {})) {
       if (typeof def === "boolean") params[k] = form.querySelector(`[name="${k}"]`).checked;
       else if (Array.isArray(def)) params[k] = [...form.querySelectorAll(`[name="${k}"]:checked`)].map((x) => x.value);
-      else if (k === "refuge") params[k] = form.querySelector(`[name="${k}"]`).value;
+      else if (k === "refuge" || k === "sizing") params[k] = form.querySelector(`[name="${k}"]`).value;
       else {
         const raw = form.querySelector(`[name="${k}"]`).value.replace(",", ".");
         const n = Number(raw);

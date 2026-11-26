@@ -82,6 +82,17 @@ def stale(db: Session, symbols: list[str], max_age_days: int = MAX_AGE_DAYS) -> 
     return [s for s in symbols if s not in fresh]
 
 
+def sectors(db: Session, symbols: list[str]) -> dict[str, str]:
+    """Settore (classificazione Yahoo) dei titoli che lo hanno in cache. Il settore cambia di rado:
+    va bene anche un dato non recente."""
+    out = {}
+    for row in db.scalars(select(Fundamentals).where(Fundamentals.symbol.in_(symbols))):
+        sector = json.loads(row.data_json).get("sector")
+        if sector:
+            out[row.symbol] = sector
+    return out
+
+
 def coverage(db: Session, symbols: list[str]) -> float:
     if not symbols:
         return 1.0

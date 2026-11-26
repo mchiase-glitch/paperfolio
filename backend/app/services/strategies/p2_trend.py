@@ -111,10 +111,11 @@ class P2Trend(BaseStrategy):
                     data,
                 )
             else:
+                w, note = self.sized(ctx, up, target_weight, available)
                 by_symbol[up.symbol] = Decision(
-                    up.symbol, "buy", target_weight,
-                    f"Chiusura mensile {last_close:.2f} > SMA({sma_months}) {sma_val:.2f}: "
-                    f"segnale rialzista, peso obiettivo {float(target_weight)*100:.1f}%",
+                    up.symbol, "buy", w,
+                    self.with_note(f"Chiusura mensile {last_close:.2f} > SMA({sma_months}) {sma_val:.2f}: "
+                                   f"segnale rialzista, peso obiettivo {float(w)*100:.1f}%", note),
                     data,
                 )
         return [by_symbol[s] for s in order]

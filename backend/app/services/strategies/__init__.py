@@ -20,12 +20,13 @@ STRATEGY_CLASSES: dict[str, type[BaseStrategy]] = {
 
 # Versione delle regole di ogni strategia, salvata con ogni backtest: se le regole cambiano,
 # i risultati vecchi restano riconoscibili. P2 v2: prezzi non più rettificati due volte per gli split.
+# Fase E2 (+1 a tutte): limiti per titolo (10%, P5 20%) e per settore (30%) predefiniti, dimensionamento e stop.
 STRATEGY_VERSIONS: dict[str, str] = {
-    "P1": "1",
-    "P2": "2",
-    "P3": "1",
-    "P4": "1",
-    "P5": "1",
-    "P6": "1",
-    "P7": "1",
+    "P1": "2",
+    "P2": "3",
+    "P3": "2",
+    "P4": "2",
+    "P5": "2",
+    "P6": "2",
+    "P7": "2",
 }

@@ -43,15 +43,28 @@ STRATEGY_DEFAULTS: dict[str, dict] = {
     "P7": {"rebalance_month": 1, "max_weight": 0.10},
 }
 # Parametri comuni a tutte le strategie (valgono anche se non salvati: sono i predefiniti delle strategie)
-COMMON_DEFAULTS: dict = {"min_order": 2500, "drawdown_brake": True}
+COMMON_DEFAULTS: dict = {
+    "min_order": 2500, "drawdown_brake": True,
+    "sizing": "equal", "risk_per_trade": 0.01,
+    "max_weight": 0.10, "max_sector": 0.30, "max_titles": 0,
+    "stop_fixed_pct": 0.0, "stop_trailing_pct": 0.0, "stop_atr_k": 0.0, "stop_time_days": 0,
+}
+# Predefiniti comuni diversi per strategia (P5: 5 posizioni da 1/5)
+COMMON_OVERRIDES: dict[str, dict] = {"P5": {"max_weight": 0.20}}
+# P7: il dimensionamento resta quello delle singole strategie
+NOT_COMMON: dict[str, set] = {"P7": {"sizing", "risk_per_trade"}}
 # Strategie che lavorano sulle tre liste insieme: la lista non si sceglie
 MULTI_LIST = {"P3", "P4", "P5", "P6", "P7"}
 
 # Regole di validazione dei parametri modificabili
-FRACTIONS = {"rebalance_band", "etf_share", "max_weight"}   # quote tra 0 e 1
-CHOICES = {"refuge": {"bond", "cash"}}
+FRACTIONS = {"rebalance_band", "etf_share", "max_weight", "max_sector", "risk_per_trade",
+             "stop_fixed_pct", "stop_trailing_pct"}   # quote tra 0 e 1
+POSITIVE = {"max_weight", "max_sector", "risk_per_trade"}  # non possono essere zero
+ZERO_ALLOWED = {"min_order", "max_titles", "stop_time_days"}  # interi: 0 = nessun limite / disattivato
+CHOICES = {"refuge": {"bond", "cash"}, "sizing": {"equal", "inverse_vol", "fixed_risk"}}
 LIST_CHOICES = {"exclude": {"banks", "insurance", "utilities"}}
-PERCENT_RANGE = {"abs_threshold": (-1.0, 1.0)}
+PERCENT_RANGE = {"abs_threshold": (-1.0, 1.0), "stop_fixed_pct": (0.0, 0.9), "stop_trailing_pct": (0.0, 0.9),
+                 "stop_atr_k": (0.0, 20.0)}
 
 
 NOT_EDITABLE = {"etf_ita", "etf_eur", "etf_usa", "etf_refuge"}  # cambiarli richiederebbe nuovi dati e strumenti
@@ -59,7 +72,9 @@ NOT_EDITABLE = {"etf_ita", "etf_eur", "etf_usa", "etf_refuge"}  # cambiarli rich
 
 def editable_defaults(strategy_type: str) -> dict:
     base = {k: v for k, v in STRATEGY_DEFAULTS.get(strategy_type, {}).items() if k not in NOT_EDITABLE}
-    return {**base, **COMMON_DEFAULTS}
+    common = {k: v for k, v in {**COMMON_DEFAULTS, **COMMON_OVERRIDES.get(strategy_type, {})}.items()
+              if k not in NOT_COMMON.get(strategy_type, set())}
+    return {**base, **{k: v for k, v in common.items() if k not in base}}  # prima quelli della strategia
 
 
 def _coerce_param(key: str, value, default):
@@ -72,7 +87,7 @@ def _coerce_param(key: str, value, default):
             return value
         if isinstance(default, int):
             v = int(value)
-            if v != float(value) or v < (1 if key != "min_order" else 0):
+            if v != float(value) or v < (0 if key in ZERO_ALLOWED else 1):
                 raise bad
             if key == "rebalance_month" and not 1 <= v <= 12:
                 raise bad
@@ -80,7 +95,7 @@ def _coerce_param(key: str, value, default):
         if isinstance(default, float):
             v = float(value)
             lo, hi = PERCENT_RANGE.get(key, (0.0, 1.0 if key in FRACTIONS else float("inf")))
-            if not lo <= v <= hi or (key == "max_weight" and v == 0):
+            if not lo <= v <= hi or (key in POSITIVE and v == 0):
                 raise bad
             return v
         if isinstance(default, list):
@@ -354,6 +369,10 @@ def update_params(config_id: int, body: ParamsBody, db: Session = Depends(get_db
                 s["share"] = round(x / tot, 6)
     if "keep_rank" in new and "n_hold" in new and new["keep_rank"] < new["n_hold"]:
         raise HTTPException(400, "Il posto fino a cui si tengono i titoli non può essere prima del numero di titoli")
+    if new.get("sizing") == "fixed_risk" and not any(float(new.get(k) or 0) > 0 for k in
+                                                     ("stop_fixed_pct", "stop_trailing_pct", "stop_atr_k")):
+        raise HTTPException(400, "Il dimensionamento a rischio fisso ha bisogno di uno stop di prezzo "
+                                 "(fisso, trailing o sulla volatilità)")
     cfg.params_json = json.dumps(new)
     db.commit()
     account = db.scalar(select(Account).where(Account.strategy_config_id == config_id))
