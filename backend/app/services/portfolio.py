@@ -60,7 +60,8 @@ def open_account(db: Session, capital: Decimal, now: datetime | None = None, nam
     return account
 
 
-def _position_rows(db: Session, account: Account, now: datetime) -> list[dict]:
+def _position_rows(db: Session, account: Account, now: datetime,
+                   max_age: int = prices.CACHE_SECONDS) -> list[dict]:
     rows = []
     today_entries = {}
     for e in positions.ledger(db, account.id):
@@ -70,8 +71,8 @@ def _position_rows(db: Session, account: Account, now: datetime) -> list[dict]:
         inst = db.get(Instrument, instrument_id)
         row = {"instrument": inst, "position": pos, "side": side, "error": None}
         try:
-            p = prices.get_price(db, inst)
-            fx, _ = prices.get_fx(db, inst.currency)
+            p = prices.get_price(db, inst, max_age=max_age)
+            fx, _ = prices.get_fx(db, inst.currency, max_age=max_age)
         except Exception as exc:
             row["error"] = str(exc)
             rows.append(row)
@@ -100,8 +101,12 @@ def _position_rows(db: Session, account: Account, now: datetime) -> list[dict]:
     return rows
 
 
-def positions_value(db: Session, account: Account, now: datetime | None = None) -> Decimal:
-    return sum((r["mv_eur"] for r in _position_rows(db, account, now or utcnow()) if r["error"] is None), ZERO)
+def positions_value(db: Session, account: Account, now: datetime | None = None,
+                    max_age: int = prices.CACHE_SECONDS) -> Decimal:
+    """Controvalore delle posizioni. `max_age` alto = usa gli ultimi prezzi salvati senza chiederli alla fonte
+    (serve all'elenco dei portafogli: con centinaia di posizioni le richieste una per una richiedono minuti)."""
+    return sum((r["mv_eur"] for r in _position_rows(db, account, now or utcnow(), max_age)
+                if r["error"] is None), ZERO)
 
 
 def snapshot(db: Session, account: Account, now: datetime | None = None) -> None:

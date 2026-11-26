@@ -90,7 +90,13 @@ export async function refreshAccount() {
 }
 
 accountBtn?.addEventListener("click", async () => {
-  const { accounts } = await api.get("/api/accounts");
+  let accounts;
+  try {
+    ({ accounts } = await api.get("/api/accounts"));
+  } catch (e) {
+    toast(`Elenco dei portafogli non disponibile: ${e.message || e}`);
+    return;
+  }
   const s = openSheet(`<h3>Portafogli</h3>
     <div class="small muted" style="margin-bottom:8px">Ogni portafoglio ha liquidità, posizioni, ordini e fiscalità separati. Tocca per passare a un altro.</div>
     ${accounts.map((a) => `<div class="list-item clickable" data-acc="${a.id}">

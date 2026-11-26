@@ -74,10 +74,14 @@ def history(benchmark: str = "FTSEMIB.MI", db: Session = Depends(get_db)):
 
 # --- Più portafogli -----------------------------------------------------------------
 
+LIST_PRICE_MAX_AGE = 7 * 24 * 3600
+
+
 def _account_dict(db: Session, a: Account, current_id: int) -> dict:
     cash = positions.cash_balance(db, a.id)
     try:
-        value = eur(cash + portfolio.positions_value(db, a))
+        # Ultimi prezzi salvati: il valore aggiornato al minuto si vede aprendo il portafoglio
+        value = eur(cash + portfolio.positions_value(db, a, max_age=LIST_PRICE_MAX_AGE))
     except Exception:
         value = None
     return {"id": a.id, "name": a.name, "initial_capital": a.initial_capital, "created_at": a.created_at,
