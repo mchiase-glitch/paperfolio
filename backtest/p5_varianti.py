@@ -8,6 +8,8 @@ uso (dalla cartella del progetto):
 - Usa solo i dati già in cache (non scarica nulla), così rilanciando si ottengono gli stessi numeri.
 - Periodo 1/1/2010–25/11/2026, 100.000 €, prova fino al 31/12/2018 e verifica dal 1/1/2019.
 - `--rsi` sostituisce la soglia di entrata (solo per il test di robustezza della fase 3).
+- `--universo backtest/universi/x.json` usa una lista nuova (fase 4): la registra nel database e, se mancano,
+  scarica storico e dati degli strumenti (è l'unico caso in cui lo script scarica qualcosa).
 
 Definizioni usate nel report:
 - "lordo" di un'operazione: risultato ai prezzi di mercato (senza commissioni, Tobin, spread di cambio
@@ -103,7 +105,31 @@ def round_trips(trades, markets, fx_spread: float, slippage: float):
     return out, len(open_buy)
 
 
-def run_one(db, code, cost_key, rsi=None):
+def load_universe(path: Path) -> str:
+    """Registra la lista (fase 4) nel database e ne scarica storico e dati degli strumenti se mancano."""
+    from app.database import SessionLocal
+    from app.services import auto_portfolio, universes
+    from app.services.strategies.p5_rsi2 import P5Rsi2
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    name = data["name"]
+    with SessionLocal() as db:
+        if universes.get_list(db, name) is None:
+            universes.create_custom_list(db, name, data["label"])
+        universes.update_items(db, name, data["items"])
+        ss = auto_portfolio.strategy_symbols(db, P5Rsi2(None, {"universe_lists": [name]}))
+        ready = auto_portfolio.ready_pct(db, ss.tradeable, ss.reference)
+    if ready < 0.99:
+        print(f"Preparazione dati {name}: {len(ss.tradeable)} titoli…", flush=True)
+        auto_portfolio.start_preparation(ss)
+        while auto_portfolio.preparation_status(ss.key)["running"]:
+            time.sleep(3)
+        failed = auto_portfolio.preparation_status(ss.key)["failed"]
+        print(f"  senza dati: {', '.join(failed) or 'nessuno'}", flush=True)
+    return name
+
+
+def run_one(db, code, cost_key, rsi=None, universe=None):
     from app.models import BacktestRun, BacktestTrade, Instrument
     from app.services import backtest
     from sqlalchemy import select
@@ -112,6 +138,8 @@ def run_one(db, code, cost_key, rsi=None):
     params = dict(params)
     if rsi is not None:
         params["rsi_entry"] = rsi
+    if universe:
+        params["universe_lists"] = [universe]
     params["backtest_options"] = {**options, "costs": COSTS[cost_key]}
     run = BacktestRun(strategy_type="P5", strategy_version="variante", params_json=json.dumps(params),
                       start_date=START, end_date=END, split_date=SPLIT, initial_capital=CAPITAL,
@@ -265,6 +293,7 @@ def main():
     ap.add_argument("--varianti", default=",".join(VARIANTS))
     ap.add_argument("--costi", default="attuale,basso")
     ap.add_argument("--rsi", default="")
+    ap.add_argument("--universo", default="", help="file JSON di una lista nuova (fase 4)")
     ap.add_argument("--out", default=str(ROOT / "backtest" / "reports" / "p5_varianti"))
     a = ap.parse_args()
 
@@ -279,21 +308,25 @@ def main():
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     rsis = [int(x) for x in a.rsi.split(",") if x] or [None]
+    universe = load_universe(Path(a.universo)) if a.universo else None
     rows = []
     for code in a.varianti.split(","):
         for cost_key in a.costi.split(","):
             for rsi in rsis:
                 t0 = time.time()
                 with SessionLocal() as db:
-                    params, r, trips, still_open = run_one(db, code, cost_key, rsi)
+                    params, r, trips, still_open = run_one(db, code, cost_key, rsi, universe)
                 summ = summarize(code, cost_key, rsi, params, r, trips, still_open)
-                name = f"P5_{code}_{COST_LABEL[cost_key]}" + (f"_RSI{rsi}" if rsi is not None else "")
+                if universe:
+                    summ["variante"] += f" ({universe})"
+                name = (f"P5_{code}_{COST_LABEL[cost_key]}" + (f"_RSI{rsi}" if rsi is not None else "")
+                        + (f"_{universe}" if universe else ""))
                 write_report(out, name, code, cost_key, summ, params, trips)
                 rows.append(summ)
                 print(f"{name}: {time.time() - t0:.0f}s netto {pct(summ['netto_totale'])} prova "
                       f"{pct(summ['netto_prova'])} verifica {pct(summ['netto_verifica'])} "
                       f"maxDD {pct(summ['perdita_massima'])}", flush=True)
-    write_comparison(out, rows, "_robustezza" if rsis != [None] else "")
+    write_comparison(out, rows, ("_robustezza" if rsis != [None] else "") + (f"_{universe}" if universe else ""))
 
 
 if __name__ == "__main__":

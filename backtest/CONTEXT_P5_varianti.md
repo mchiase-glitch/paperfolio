@@ -143,7 +143,28 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
     - Tutto dipende dal broker a basso costo, ipotizzato senza spread di cambio.
     - In questo ciclo sono state fatte 15 prove, quindi c'è un certo rischio di aver scelto la migliore per caso.
     - Vale il *survivorship bias* del §11.
-- [ ] **Fase 4 (facoltativa):** verifica su un universo nuovo, mai usato prima (per esempio azioni STOXX 600 fuori da FTSE MIB ed Euro Stoxx 50), solo per la variante promossa.
+- [x] **Fase 4 (facoltativa):** verifica su un universo nuovo, mai usato prima (per esempio azioni STOXX 600 fuori da FTSE MIB ed Euro Stoxx 50), solo per la variante promossa.
+  - **Impostazione, fissata il 26/11/2026 prima di scaricare i dati e di lanciare qualsiasi prova:**
+    - Universo `backtest/universi/eurozona_nuovi.json`: 126 azioni dell'eurozona di grande e media capitalizzazione, in gran parte nello STOXX 600, quotate in euro (Francia, Germania, Paesi Bassi, Spagna, Belgio, Finlandia), escluse quelle di FTSE MIB ed Euro Stoxx 50.
+    - Solo titoli in euro: niente sterline, franchi o corone, per non dover gestire nuovi cambi (le quotazioni in pence di Londra) e paesi senza ritenuta predefinita. Composizione di oggi, quindi c'è survivorship bias.
+    - **Prova decisiva:** V5 in C-basso con RSI 10, stessi parametri e stesso periodo. **Supera la fase 4** se:
+      - il rendimento netto è positivo sia in prova sia in verifica;
+      - il rendimento lordo medio per operazione è maggiore del costo medio per giro.
+    - Solo per confronto, non per decidere: V0 in C-basso e V5 in C-attuale sullo stesso universo.
+  - *Chiusa il 26/11/2026.* Dati scaricati per 125 titoli su 126 (manca TKWY.AS, non più quotato). Report in `reports/p5_varianti/*_eurozona_nuovi.*`, confronto in `confronto_eurozona_nuovi.md`.
+
+    | Prova | Netto prova | Netto verifica | Netto totale | Perdita massima | Lordo medio | Costo per giro |
+    |---|---|---|---|---|---|---|
+    | **V5 C-basso (decisiva)** | +8,9% | **−10,7%** | −0,8% | −65,3% | +0,18% | 0,15% |
+    | V5 C-attuale | +0,5% | −40,9% | −21,6% | −98,7% | +0,18% | 0,67% |
+    | V0 C-basso | +10,9% | +0,5% | +5,9% | −43,1% | +0,21% | 0,05% |
+    | V0 C-attuale | +3,0% | −5,4% | −1,0% | −56,1% | +0,25% | 0,26% |
+
+    - **V5 non supera la fase 4:** è negativa in verifica (−10,7%). Il lordo supera il costo di un soffio (0,18% contro 0,15%).
+    - Le perdite si concentrano nei crolli del 2020 e del 2022 (risultato lordo −62.500 € e −52.100 €). Senza l'uscita sotto la media a 200 e senza freno, le posizioni restano dentro i cali.
+    - Sull'universo nuovo **V0 va meglio di V5**: il miglioramento di V5 visto sulle liste originali non si ripete.
+    - Possibili anomalie nei dati di Yahoo: ATO.PA −98,5% in una settimana a dicembre 2024 (ristrutturazione di Atos con forte diluizione) e BKT.MC +47% in una settimana nel 2013. Togliendo Atos, la verifica resta comunque negativa: il lordo 2019–2026 passa da circa −64.000 € a circa −43.000 €.
+    - Con i costi attuali V5 porta il conto quasi a zero (1.642 €): quando il capitale si riduce, le commissioni minime pesano sempre di più.
 - [ ] **Fase 5:** decisione. Se c'è una variante promossa, va in paper trading dal vivo come **P5b**, accanto a P5, per almeno 6 mesi prima di qualsiasi altra modifica. Per V1 dal vivo serve anche spostare il controllo vicino alla chiusura: circa 17:20 per Milano ed Europa, circa 21:45 per gli USA.
 
 **Idee per cicli futuri** (non testarle adesso): RSI cumulativo (somma dell'RSI a 2 giorni su 2 giorni < 35, uscita con RSI a 2 giorni > 65); filtro di regime sull'indice invece del freno sul drawdown; posizioni dimensionate in base alla volatilità; 3 posizioni invece di 5.
@@ -169,6 +190,10 @@ Per ogni combinazione variante × scenario di costo, un report in `backtest/repo
 | 26/11/2026 | V5 RSI<5 | C-basso | +11,9% | +1,8% | −48,4% | fase 3, robustezza |
 | 26/11/2026 | V5 RSI<10 | C-basso | +13,2% | +6,9% | −44,3% | fase 3, robustezza (stesso run della fase 2) |
 | 26/11/2026 | V5 RSI<15 | C-basso | +14,4% | +8,5% | −50,6% | fase 3, robustezza |
+| 26/11/2026 | V5 eurozona_nuovi | C-basso | +8,9% | −10,7% | −65,3% | fase 4, prova decisiva: non superata |
+| 26/11/2026 | V5 eurozona_nuovi | C-attuale | +0,5% | −40,9% | −98,7% | fase 4, confronto |
+| 26/11/2026 | V0 eurozona_nuovi | C-basso | +10,9% | +0,5% | −43,1% | fase 4, confronto |
+| 26/11/2026 | V0 eurozona_nuovi | C-attuale | +3,0% | −5,4% | −56,1% | fase 4, confronto |
 
 ## 11. Promemoria
 
